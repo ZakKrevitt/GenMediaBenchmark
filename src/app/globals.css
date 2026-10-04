@@ -1,0 +1,637 @@
+:root {
+  /* Legacy names resolve to Arc semantic tokens so every screen follows the light and dark themes. */
+  --bg: var(--background);
+  --raised: var(--surface-muted);
+  --line: var(--border);
+  --text: var(--foreground);
+  --muted: var(--text-secondary);
+  --green: var(--accent);
+  --red: var(--danger);
+  --ink: var(--accent-foreground);
+  --radius: var(--radius-panel);
+  /* Arc components read --font-body; the app loads Geist, not Inter. */
+  --font-body: var(--font-geist), -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --body: var(--font-geist), -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --utility: var(--font-geist-mono), 'SFMono-Regular', Consolas, monospace;
+}
+[hidden] {
+  display: none !important;
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--body);
+  font-size: 14px;
+  letter-spacing: var(--tracking-body);
+  -webkit-font-smoothing: antialiased;
+  scrollbar-color: var(--border-strong) transparent;
+}
+::selection {
+  background: var(--accent-subtle);
+  color: var(--foreground);
+}
+table,
+time,
+.count {
+  font-variant-numeric: tabular-nums;
+}
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+button,
+a,
+input,
+textarea,
+select {
+  touch-action: manipulation;
+}
+button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  min-height: var(--control-height-md);
+  padding: 0 var(--space-4);
+  background: var(--surface);
+  color: var(--text);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    background var(--duration-fast) var(--ease-standard),
+    border-color var(--duration-fast) var(--ease-standard),
+    color var(--duration-fast) var(--ease-standard);
+}
+button:hover:not(:disabled) {
+  background: var(--surface-muted);
+  border-color: var(--border-strong);
+}
+button:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible,
+summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+a {
+  color: var(--green);
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+}
+button svg {
+  flex-shrink: 0;
+}
+p {
+  line-height: 1.6;
+  margin: 0 0 12px;
+}
+h1,
+h2,
+h3 {
+  margin: 0;
+  font-weight: 500;
+  letter-spacing: -0.035em;
+}
+h1 {
+  font-size: 36px;
+  line-height: 1.18;
+}
+h2 {
+  font-size: 18px;
+  line-height: 1.35;
+}
+h3 {
+  font-size: 19px;
+  line-height: 1.4;
+}
+small {
+  font-size: 12px;
+  line-height: 1.5;
+}
+strong {
+  font-weight: 500;
+}
+input,
+textarea,
+select {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  color: var(--text);
+  border-radius: var(--radius-control);
+  width: 100%;
+  padding: 10px 14px;
+  min-height: var(--control-height-md);
+}
+textarea {
+  min-height: 90px;
+  resize: vertical;
+}
+input::placeholder,
+textarea::placeholder {
+  color: var(--text-secondary);
+}
+input[type='checkbox'] {
+  width: 16px;
+  height: 16px;
+  min-height: 16px;
+  flex-shrink: 0;
+  accent-color: var(--green);
+  margin: 2px 0;
+}
+label {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  line-height: 1.4;
+  font-size: 13px;
+  font-weight: 500;
+}
+label small {
+  font-weight: 400;
+  color: var(--muted);
+}
+.primary {
+  background: var(--foreground);
+  color: var(--background);
+  border-color: var(--foreground);
+}
+.primary:hover:not(:disabled) {
+  background: var(--foreground);
+  border-color: var(--foreground);
+  opacity: 0.91;
+}
+.secondary {
+  background: transparent;
+  border-color: var(--border-strong);
+}
+.wide {
+  width: 100%;
+}
+.text-button {
+  border: 0;
+  background: none;
+  padding: 5px 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.muted {
+  color: var(--muted);
+}
+.small {
+  font-size: 12px;
+}
+/* A quiet line under a heading: where something came from or what state it is in. */
+/* A label for a control group that is not a native <label>. */
+/* The production studio is its own full-screen route, so its nav entry is a link. */
+.count {
+  margin-left: auto;
+  border-radius: 4px;
+  padding: 1px 6px;
+  background: var(--green);
+  color: var(--ink);
+  font-size: var(--text-xs);
+}
+.content {
+  padding: 32px 40px 40px;
+  max-width: 1650px;
+  margin: 0 auto;
+}
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+  margin-bottom: 26px;
+}
+.panel-heading {
+  padding: 22px 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  border-bottom: 1px solid var(--line);
+}
+.panel-heading h2 {
+  font-size: 16px;
+  letter-spacing: -0.015em;
+}
+.panel-heading p {
+  color: var(--muted);
+  font-size: var(--text-xs);
+  margin: 7px 0 0;
+}
+.empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  flex-direction: column;
+  padding: 55px 35px;
+  min-height: 320px;
+}
+.empty h3 {
+  font-size: 21px;
+  letter-spacing: -0.02em;
+}
+.empty p {
+  font-size: 12px;
+  color: var(--muted);
+  max-width: 360px;
+  margin: 13px 0 20px;
+  line-height: 1.85;
+}
+.empty button {
+  font-size: 12px;
+}
+.table-scroll {
+  overflow-x: auto;
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  text-align: left;
+}
+th {
+  font-weight: 400;
+  color: var(--muted);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+  background: var(--background);
+}
+th,
+td {
+  padding: 17px 23px;
+  border-bottom: 1px solid var(--line);
+}
+tr:last-child td {
+  border-bottom: none;
+}
+td {
+  line-height: 1.5;
+}
+td strong {
+  font-size: 12px;
+}
+td small {
+  display: block;
+  color: var(--muted);
+  margin-top: 5px;
+  font-size: var(--text-xs);
+}
+td a {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+details {
+  border-top: 1px solid var(--line);
+  padding: 18px 0;
+}
+details summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  cursor: pointer;
+  font-size: var(--text-sm);
+  font-weight: 500;
+  line-height: 1.6;
+  list-style: none;
+}
+details summary::-webkit-details-marker {
+  display: none;
+}
+/* A drawn chevron replaces the native disclosure triangle and turns when open. */
+details summary::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  flex-shrink: 0;
+  margin: 0 3px 0 1px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  color: var(--text-muted);
+  transform: rotate(-45deg);
+  transition: transform var(--duration-fast) var(--ease-standard);
+}
+details[open] > summary::before {
+  transform: rotate(45deg);
+}
+details p {
+  font-size: 12px;
+  margin: 15px 0 0;
+  color: var(--foreground);
+}
+details > label {
+  margin-top: 15px;
+}
+details > button {
+  margin-top: 15px;
+}
+details > a {
+  display: block;
+  margin: 10px 0;
+  font-size: 12px;
+}
+.worker {
+  padding: 25px;
+  border-right: 1px solid var(--line);
+}
+.worker:last-child {
+  border: 0;
+}
+.worker > strong {
+  font-size: 13px;
+  margin-left: 8px;
+}
+.worker > span:not(.status-dot) {
+  float: right;
+  font-size: var(--text-xs);
+  color: var(--muted);
+}
+.worker > small {
+  display: block;
+  margin-top: 16px;
+  font-size: var(--text-xs);
+  color: var(--muted);
+}
+.alert {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 14px 17px;
+  border: 1px solid color-mix(in oklch, var(--danger) 35%, var(--border));
+  border-radius: 8px;
+  margin-bottom: 20px;
+  font-size: 12px;
+  line-height: 1.7;
+  background: color-mix(in oklch, var(--danger) 8%, var(--surface));
+}
+.alert > svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+.alert > span {
+  flex: 1;
+}
+.alert > button {
+  padding: 2px;
+  background: none;
+  border: 0;
+}
+.alert.success {
+  border-color: color-mix(in oklch, var(--danger) 35%, var(--border));
+  background: color-mix(in oklch, var(--danger) 8%, var(--surface));
+  color: var(--green);
+}
+.error {
+  color: var(--red);
+}
+.loading-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  justify-content: center;
+  align-items: center;
+  padding: 100px 30px;
+  color: var(--muted);
+  font-size: 14px;
+}
+.spin {
+  animation: spin 1.2s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (max-width: 900px) {
+  /* Brand, then the form, then the story: people open this page on a phone to sign in. */
+}
+@media (min-width: 1450px) {
+  .content {
+    padding-left: 50px;
+    padding-right: 50px;
+  }
+}
+@media (max-width: 1200px) {
+  .content {
+    padding: 24px;
+  }
+}
+@media (max-width: 900px) {
+  .worker {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+}
+@media (max-width: 650px) {
+  .content {
+    padding: 19px 17px;
+  }
+  .panel {
+    margin-bottom: 20px;
+  }
+  .panel-heading {
+    padding: 20px;
+  }
+  .panel-heading h2 {
+    font-size: 15px;
+  }
+  .panel-heading p {
+    font-size: var(--text-xs);
+  }
+  .panel-heading .text-button {
+    font-size: var(--text-xs);
+  }
+  .empty {
+    padding: 35px 20px;
+    min-height: 300px;
+  }
+  .empty h3 {
+    font-size: 20px;
+  }
+  .empty p {
+    font-size: var(--text-xs);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+}
+/* Links that act as buttons match the Arc secondary button. */
+/* Caption look picker and posting queue */
+.look {
+  display: grid;
+  gap: 16px;
+  margin-top: 8px;
+}
+.scrub {
+  display: grid;
+  gap: 8px;
+}
+.scrub input[type='range'] {
+  width: 100%;
+}
+
+/* Selection reuses the Studio palette, typography and panel treatments. */
+
+/* The text editor extends the existing studio scale and controls. */
+/* Tile animations are illustrative loops; the FFmpeg preview shows the real motion. */
+
+/* Studio shell ------------------------------------------------------------ */
+.count {
+  margin-left: auto;
+  min-width: 20px;
+  border-radius: var(--radius-pill);
+  padding: 1px 7px;
+  background: color-mix(in oklch, var(--foreground) 8%, transparent);
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  text-align: center;
+}
+.text-button {
+  min-height: 32px;
+  padding: 0;
+  gap: var(--space-2);
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  font-weight: 400;
+}
+.text-button:hover:not(:disabled) {
+  background: none;
+  color: var(--foreground);
+}
+.content {
+  padding: var(--space-10) var(--space-10) var(--space-16);
+  max-width: 1440px;
+}
+.studio-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--space-6);
+  margin-bottom: var(--space-8);
+}
+.studio-title h1 {
+  font-size: var(--text-3xl);
+  font-weight: 500;
+  line-height: var(--leading-display);
+  letter-spacing: var(--tracking-display);
+  text-wrap: balance;
+}
+.studio-title p {
+  margin: var(--space-2) 0 0;
+  max-width: 60ch;
+  color: var(--text-secondary);
+  font-size: var(--text-base);
+  line-height: var(--leading-body);
+}
+.loading-panel {
+  color: var(--text-secondary);
+}
+
+/* Today ------------------------------------------------------------------- */
+.today {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-12);
+}
+.today h2 {
+  margin-bottom: var(--space-4);
+  font-size: var(--text-lg);
+  font-weight: 500;
+  letter-spacing: var(--tracking-display);
+}
+/* The four studios read as one loop: make, post, learn, adjust. */
+@media (max-width: 900px) {
+  .content {
+    padding: var(--space-8) var(--space-6) var(--space-12);
+  }
+}
+@media (max-width: 650px) {
+  /* The scrolling top nav already lists every section, so the in-page switcher would repeat it. */
+  .content {
+    padding: var(--space-6) var(--space-4) var(--space-12);
+  }
+  .studio-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-4);
+    margin-bottom: var(--space-6);
+  }
+  .studio-title h1 {
+    font-size: var(--text-2xl);
+  }
+  .studio-title p {
+    font-size: var(--text-sm);
+  }
+}
+/* fal effects in the editor: same panels, chips and preset cards as the text controls. */
+
+/* Today: calm state, loop note ---------------------------------------------- */
+@media (max-width: 650px) {
+  /* Phones: the top strip lists studios; the in-page switcher lists the studio's sections. */
+}
+
+/* Reinterpret: generated visuals over a kept source range. */
+
+.rx > .text-button {
+  display: inline-flex;
+  gap: 6px;
+}
+
+/* Keyboard focus stays visible. Arc's foundation removes every outline as a product choice;
+   keyboard users still need to see where they are, so :focus-visible gets the accent ring back. */
+
+/* Full-bleed workspaces (production studio, character canvas) fill the area beside the sidebar
+   and scroll inside themselves, so the page itself never scrolls while one is showing. */
+
+/* Character swap: studio characters placed into a source range. */
+/* The share the estimate has covered shows in full colour. */
+/* Range picker: the whole video is an overview you scrub; the selection track has labelled ends. */
+
+/* Reinterpret: two modes, one render. */
+/* Settings: one row per generation provider. */
+/* Channel overview: the channel's own activity. */
+
+:is(button, a, input, textarea, select, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--accent) !important;
+  outline-offset: 2px;
+}
+
+/* Standalone benchmark: one centred column, no sidebar. */
+.bench-shell .content {
+  margin: 0 auto;
+  min-width: 0;
+}
+.bench-shell .studio-header {
+  align-items: flex-start;
+}
+@media (max-width: 720px) {
+  .bench-shell .content {
+    padding: var(--space-6) 16px var(--space-12);
+  }
+}

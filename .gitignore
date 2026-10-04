@@ -1,0 +1,11 @@
+node_modules/
+.next/
+.data/
+*.tsbuildinfo
+next-env.d.ts
+.DS_Store
+# Your keys live here. Never commit them.
+.env
+.env.*
+!.env.example
+.vitest/

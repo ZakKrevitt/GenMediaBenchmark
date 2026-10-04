@@ -1,0 +1,43 @@
+{
+  "name": "gen-media-benchmark",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Run one prompt across fal and Higgsfield video models and compare output, speed, cost and quality.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "dev": "next dev --hostname localhost --port 3200",
+    "build": "next build",
+    "start": "next start --hostname localhost --port 3200",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:integration": "node --import tsx scripts/benchmark-integration.ts",
+    "check": "npm run test && npm run typecheck && npm run lint && npm run build",
+    "check:secrets": "node scripts/check-secrets.mjs"
+  },
+  "dependencies": {
+    "@electric-sql/pglite": "^0.5.8",
+    "lucide-react": "^1.42.0",
+    "motion": "^14.0.0",
+    "next": "^16.3.4",
+    "openai": "^7.10.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "zod": "^4.5.4"
+  },
+  "devDependencies": {
+    "@types/node": "^26.4.1",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.7",
+    "eslint": "^9.39.5",
+    "eslint-config-next": "^16.3.4",
+    "prettier": "^3.9.6",
+    "tsx": "^4.23.13",
+    "typescript": "^6.0.3",
+    "vitest": "^5.0.0"
+  }
+}

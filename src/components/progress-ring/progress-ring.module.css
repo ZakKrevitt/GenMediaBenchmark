@@ -1,0 +1,21 @@
+.ring { position: relative; display: inline-grid; flex: none; place-items: center; color: var(--accent); vertical-align: middle; }
+.ring svg { display: block; width: 100%; height: 100%; transform: rotate(-90deg); overflow: visible; }
+.sm { width: 16px; height: 16px; }
+.md { width: 40px; height: 40px; }
+.lg { width: 64px; height: 64px; }
+.track, .fill { fill: none; stroke-linecap: round; }
+.sm .track, .sm .fill { stroke-width: 5; }
+.md .track, .md .fill { stroke-width: 3.5; }
+.lg .track, .lg .fill { stroke-width: 3; }
+.track { stroke: color-mix(in oklab, currentColor 16%, transparent); }
+.fill { stroke: currentColor; transition: stroke var(--duration-standard) var(--ease-standard); }
+.ring[data-complete] { color: var(--success); }
+.spin { transform-origin: 22px 22px; animation: ring-spin .9s linear infinite; }
+.count { position: absolute; inset: 0; display: grid; place-items: center; color: var(--foreground); font-size: var(--text-xs); font-weight: 500; font-variant-numeric: tabular-nums; line-height: 1; }
+.lg .count { font-size: var(--text-sm); }
+.status { display: flex; align-items: center; gap: 10px; margin: 0; color: var(--text-secondary); font-size: var(--text-sm); line-height: var(--leading-body); }
+.statusText { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; min-width: 0; }
+.statusLabel { color: var(--foreground); font-weight: 500; }
+.detail { color: var(--text-muted); font-variant-numeric: tabular-nums; }
+@keyframes ring-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spin { animation-duration: 2.4s; } .fill { transition: none; } }
