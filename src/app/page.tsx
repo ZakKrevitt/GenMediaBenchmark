@@ -1,5 +1,6 @@
 import { Benchmark } from '@/components/benchmark';
 import { ThemeToggle } from '@/components/theme-toggle';
+import { SetupGate } from '@/components/setup';
 
 export const dynamic = 'force-dynamic';
 
@@ -14,7 +15,9 @@ export default function Page() {
           </div>
           <ThemeToggle />
         </header>
-        <Benchmark active />
+        <SetupGate>
+          <Benchmark active />
+        </SetupGate>
       </main>
     </div>
   );

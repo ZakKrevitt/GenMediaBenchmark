@@ -20,36 +20,32 @@ It runs on your machine with your own provider keys. There are no accounts, no h
 - ffmpeg and ffprobe on your `PATH` (`brew install ffmpeg`, `apt install ffmpeg`, or [ffmpeg.org](https://ffmpeg.org/download.html))
 - A [fal](https://fal.ai/dashboard/keys) key, a [Higgsfield](https://cloud.higgsfield.ai/api-keys) key, or both
 
-## Setup
+## Quick start with Claude Code or Codex
+
+Paste this into Claude Code, Codex or another coding agent:
+
+> Set up https://github.com/ZakKrevitt/GenMediaBenchmark and run it
+
+The agent follows [AGENTS.md](AGENTS.md): it installs everything, starts the app and sends you to a setup screen in your browser, where you paste your own keys. Your keys go straight into a local file and never through the chat.
+
+## Setup by hand
 
 ```bash
 git clone https://github.com/ZakKrevitt/GenMediaBenchmark.git
 cd GenMediaBenchmark
 npm install
-cp .env.example .env.local
-```
-
-Open `.env.local` and add your keys:
-
-```bash
-FAL_KEY=your-fal-key
-HIGGSFIELD_KEY=your-key-id:your-key-secret
-DAILY_LIMIT_USD=20
-```
-
-Then start it:
-
-```bash
 npm run dev
 ```
 
-and open [http://localhost:3200](http://localhost:3200).
+Open [http://localhost:3200](http://localhost:3200). The first time, a setup screen checks Node and ffmpeg, then asks for your keys. Each key is checked with its provider for free and saved to `.env.local`.
 
-A provider without a key is hidden from the model list. Restart the server after changing `.env.local`.
+Prefer the terminal? `npm run setup` walks through the same steps with hidden input, and `npm run setup -- --check` reports what works without printing any key. You can also copy `.env.example` to `.env.local` and fill it in yourself.
+
+One provider is enough; models from a provider without a key are hidden. Change keys or the daily limit later with **Keys and limit** at the top of the page.
 
 ### Optional: AI judge
 
-Set `OPENAI_API_KEY` and `LLM_MODEL` (any OpenAI model that accepts images) to enable the **AI judge** button. Each judged render reserves `JUDGE_CENTS` (default 5) against the daily limit.
+Add an OpenAI key and a model that accepts images in setup (or set `OPENAI_API_KEY` and `LLM_MODEL`) to enable the **AI judge** button. Each judged render reserves `JUDGE_CENTS` (default 5) against the daily limit.
 
 ### fal billing
 
@@ -57,7 +53,7 @@ fal only returns billed cost to admin-scoped keys. With an ordinary key, renders
 
 ## Your keys stay yours
 
-- Keys are read from `.env.local` only. They are never stored in the database or sent to the browser, and `.env*` files are gitignored.
+- Keys live in `.env.local` only (created owner-readable, and gitignored). They are never stored in the database, and the app never sends them back to the browser, not even to the setup screen.
 - The server only answers requests made to `localhost` and only accepts changes from its own page, so other websites cannot drive it.
 - Everything you generate (database and videos) lives in `.data/`, also gitignored. Delete it to start over.
 - `npm run check:secrets` scans the repository for anything that looks like a key. Run it before you push a fork.
@@ -86,4 +82,4 @@ npm run check             # tests, typecheck, lint and build
 
 ## License
 
-MIT
+MIT, see [LICENSE](LICENSE). The UI building blocks in `src/components/arc` are free components from [Arc](https://uiarc.dev), also MIT, with their notice in [src/components/arc/LICENSE](src/components/arc/LICENSE).

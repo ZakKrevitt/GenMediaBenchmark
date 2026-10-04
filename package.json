@@ -12,6 +12,7 @@
     "dev": "next dev --hostname localhost --port 3200",
     "build": "next build",
     "start": "next start --hostname localhost --port 3200",
+    "setup": "node --import tsx scripts/setup.ts",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "test": "vitest run",
@@ -27,6 +28,7 @@
     "openai": "^7.10.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
+    "tsx": "^4.23.13",
     "zod": "^4.5.4"
   },
   "devDependencies": {
@@ -36,7 +38,6 @@
     "eslint": "^9.39.5",
     "eslint-config-next": "^16.3.4",
     "prettier": "^3.9.6",
-    "tsx": "^4.23.13",
     "typescript": "^6.0.3",
     "vitest": "^5.0.0"
   }

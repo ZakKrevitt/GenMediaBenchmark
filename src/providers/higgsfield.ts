@@ -64,7 +64,7 @@ async function detail(response: Response) {
 
 async function rejected(response: Response, mutation: boolean): Promise<never> {
   if (response.status === 401)
-    throw new GateError('INVALID_HIGGSFIELD_KEY', 'Higgsfield rejected the saved key. Replace it in the Higgsfield panel.');
+    throw new GateError('INVALID_HIGGSFIELD_KEY', 'Higgsfield rejected the key. Copy it again from cloud.higgsfield.ai/api-keys and run setup.');
   // Higgsfield reports an empty balance as 403 not_enough_credits as well as 402.
   const reason = response.status === 403 ? await detail(response.clone()) : '';
   if (response.status === 402 || /not_enough_credits/i.test(reason))
@@ -110,7 +110,7 @@ export async function pollHiggsfield(
   apiUrl.parse(statusUrl);
   const response = await call(key, statusUrl, {}, fetcher);
   if (response.status === 401)
-    throw new GateError('AUTH_REQUIRED', 'Higgsfield rejected the saved key. Replace it in the Higgsfield panel.');
+    throw new GateError('AUTH_REQUIRED', 'Higgsfield rejected the key. Copy it again from cloud.higgsfield.ai/api-keys and run setup.');
   if (!response.ok) throw classifyHttp(response.status);
   const body = z
     .object({

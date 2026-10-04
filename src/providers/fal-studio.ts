@@ -62,7 +62,7 @@ export async function submitShot(
     );
   }
   if (response.status === 401 || response.status === 403)
-    throw new GateError('INVALID_FAL_KEY', 'fal rejected the saved key. Replace it in the fal panel.');
+    throw new GateError('INVALID_FAL_KEY', 'fal rejected the key. Copy it again from fal.ai/dashboard/keys and run setup.');
   if (!response.ok) throw classifyHttp(response.status, true);
   const parsed = z
     .object({ request_id: requestId, status_url: queueUrl, response_url: queueUrl })
