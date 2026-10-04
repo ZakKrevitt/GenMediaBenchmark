@@ -4,6 +4,10 @@ Run one prompt across many fal and Higgsfield video models at once, then compare
 
 It runs on your machine with your own provider keys. There are no accounts, no hosted service and no database to install.
 
+![Results: the same prompt on four models, with timing, cost, output and a filmstrip for each](docs/results.webp)
+
+![Model picker: every fal and Higgsfield video model, snapped to your settings and priced](docs/models.webp)
+
 ## What it does
 
 - **Every model, one prompt.** Lists every active text-to-video (or image-to-video) model on fal and Higgsfield. Tuned models use hand-written request builders; every other model is driven from its published parameters, with your settings snapped to what each model accepts.
