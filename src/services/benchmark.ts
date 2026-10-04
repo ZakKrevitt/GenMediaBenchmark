@@ -56,6 +56,8 @@ export const benchSettingsSchema = z.object({
   seed: z.number().int().min(0).max(2147483647).nullable().default(null),
   /** Renders per model per prompt, to see how much a model varies. */
   takes: z.number().int().min(1).max(3).default(1),
+  /** Only models that render exactly this duration, so costs compare like for like. */
+  exactDuration: z.boolean().default(true),
   /** A start image turns the benchmark into image-to-video. */
   firstFrameId: z.string().uuid().nullable().default(null),
 });
@@ -78,6 +80,8 @@ export type BenchModel = {
   /** First listed within the last two weeks, after the benchmark's first look at the catalogue. */
   isNew?: boolean;
   firstSeen?: string | null;
+  /** Blocked only because it cannot render exactly the requested duration. */
+  lengthMismatch?: boolean;
 };
 
 // Renders whose price fal cannot predict hold this much of the daily limit until the billing
@@ -695,12 +699,25 @@ export async function benchmarkModels(raw: unknown, fetcher: typeof fetch = fetc
       .then(Boolean)
       .catch(() => false),
   ]);
+  if (s.exactDuration)
+    for (const m of [...fal, ...hf]) {
+      const blocker = durationBlocker(m, s.duration);
+      if (blocker !== m.blocker) Object.assign(m, { blocker, lengthMismatch: true });
+    }
   const models = [...blockedLast(fal), ...blockedLast(hf)];
   const seen = await markSeen(models).catch(
     () => new Map<string, { firstSeen: string; isNew: boolean }>(),
   );
   for (const m of models) Object.assign(m, seen.get(m.id) ?? { isNew: false, firstSeen: null });
   return { models, falConnected, higgsfieldConnected, notes };
+}
+// With exact duration on, a model that would snap to another length (or picks its own) cannot run,
+// so every render in the benchmark is the same length and their costs compare directly.
+function durationBlocker(m: BenchModel, duration: number) {
+  if (m.blocker || m.used.duration === duration) return m.blocker;
+  return m.used.duration === null
+    ? `Sets its own length, not exactly ${duration} s`
+    : `Can’t make exactly ${duration} s (nearest is ${m.used.duration} s)`;
 }
 // Records the first sighting of each listed model. Anything first seen within a day of the
 // provider's first listing is the baseline; later arrivals are new for two weeks.
@@ -853,7 +870,12 @@ export async function addToBenchmark(
         key: input.key,
         prompts: [bench[0].prompt],
         suiteName: undefined,
-        settings: { ...benchSettingsSchema.parse(bench[0].settings), takes: 1 },
+        settings: {
+          ...benchSettingsSchema.parse(bench[0].settings),
+          takes: 1,
+          // Benchmarks from before exact duration existed keep snapping to each model's nearest length.
+          exactDuration: (bench[0].settings as { exactDuration?: boolean }).exactDuration ?? false,
+        },
         models: input.models,
       },
       benchmarkId,

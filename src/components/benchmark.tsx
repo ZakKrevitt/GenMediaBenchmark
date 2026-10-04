@@ -102,6 +102,7 @@ const settingsQuery = (s: BenchRunSettings) =>
     audio: String(s.audio),
     ...(s.seed !== null ? { seed: String(s.seed) } : {}),
     ...(s.firstFrameId ? { firstFrameId: s.firstFrameId } : {}),
+    exactDuration: String(s.exactDuration),
   });
 const usedLabel = (u: BenchModel['used'] | null) =>
   u
@@ -139,6 +140,7 @@ export function Benchmark({ active }: { active: boolean }) {
     seed: null,
     firstFrameId: null,
     takes: 1,
+    exactDuration: true,
   });
   const [extraPrompts, setExtraPrompts] = useState<string[]>([]);
   const [suiteName, setSuiteName] = useState('');
@@ -263,7 +265,14 @@ export function Benchmark({ active }: { active: boolean }) {
     () => (models ?? []).filter((m) => !m.blocker && connected[m.provider]),
     [models, connected],
   );
-  const blocked = useMemo(() => (models ?? []).filter((m) => m.blocker), [models]);
+  const blocked = useMemo(
+    () => (models ?? []).filter((m) => m.blocker && !m.lengthMismatch),
+    [models],
+  );
+  const wrongLength = useMemo(
+    () => (models ?? []).filter((m) => m.lengthMismatch && connected[m.provider]),
+    [models, connected],
+  );
   const offline = (Object.keys(connected) as Provider[]).filter(
     (p) => !connected[p] && (models ?? []).some((m) => m.provider === p),
   );
@@ -338,7 +347,11 @@ export function Benchmark({ active }: { active: boolean }) {
     setPrompt(suiteMates[0] ?? b.prompt);
     setExtraPrompts(suiteMates.slice(1));
     setSuiteName(b.suiteName ?? '');
-    setSettings({ ...b.settings, firstFrameId: b.settings.firstFrameId ?? null });
+    setSettings({
+      ...b.settings,
+      firstFrameId: b.settings.firstFrameId ?? null,
+      exactDuration: b.settings.exactDuration ?? false,
+    });
     setImageMode(Boolean(b.settings.firstFrameId));
     setModels(null);
     setChosen(new Set(b.shots.map((s) => s.modelId)));
@@ -561,6 +574,17 @@ export function Benchmark({ active }: { active: boolean }) {
               ))}
             </div>
           </div>
+          <label
+            className={styles.check}
+            title="Only models that make exactly this length, so costs compare like for like"
+          >
+            <input
+              type="checkbox"
+              checked={settings.exactDuration}
+              onChange={(e) => setSettings({ ...settings, exactDuration: e.target.checked })}
+            />
+            <span>Exact length</span>
+          </label>
           <label className={styles.check}>
             <input
               type="checkbox"
@@ -699,9 +723,25 @@ export function Benchmark({ active }: { active: boolean }) {
           <p className={styles.hint}>
             {offline.map((p) => PROVIDER_NAME[p]).join(' and ')} {offline.length > 1 ? 'are' : 'is'}{' '}
             not connected, so {offline.length > 1 ? 'their' : 'its'} models are hidden. Add{' '}
-            {offline.map((p) => <code key={p}>{p === 'fal' ? 'FAL_KEY' : 'HIGGSFIELD_KEY'}</code>).reduce<React.ReactNode[]>((a, c, i) => (i ? [...a, ' and ', c] : [c]), [])}{' '}
-            to <code>.env.local</code> and restart the server.
+            {offline.length > 1 ? 'the keys' : 'the key'} under <strong>Keys and limit</strong> at the
+            top of the page.
           </p>
+        )}
+        {wrongLength.length > 0 && (
+          <details className={styles.blocked}>
+            <summary>
+              {wrongLength.length} {wrongLength.length === 1 ? 'model can’t' : 'models can’t'} make
+              exactly {settings.duration} s, so they are left out to keep costs comparable. Try
+              another length, or untick Exact length to round each model to its nearest.
+            </summary>
+            <ul>
+              {wrongLength.map((m) => (
+                <li key={m.id}>
+                  {m.name} · {PROVIDER_NAME[m.provider]} <small>{m.endpoint}</small> · {m.blocker}
+                </li>
+              ))}
+            </ul>
+          </details>
         )}
         {blocked.length > 0 && (
           <details className={styles.blocked}>

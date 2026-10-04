@@ -218,7 +218,31 @@ try {
   };
   globalThis.fetch = fake;
 
-  const settings = { duration: 5, aspectRatio: '9:16', resolution: '720p', audio: true, seed: null };
+  // Most checks below let each model round to its nearest length; exact length is checked on its own.
+  const settings = { duration: 5, aspectRatio: '9:16', resolution: '720p', audio: true, seed: null, exactDuration: false };
+
+  const exact = (await bench.benchmarkModels({ ...settings, exactDuration: true }, fake)).models;
+  const exactBy = (e: string) => exact.find((m) => m.id === `fal:${e}`)!;
+  assert.equal(exactBy('acme/clip/text-to-video').blocker, null, 'a model that takes 5 s stays runnable');
+  assert.equal(exactBy('fal-ai/veo3.1/fast').blocker, 'Can’t make exactly 5 s (nearest is 4 s)');
+  assert.equal(exactBy('fal-ai/veo3.1/fast').lengthMismatch, true);
+  assert.equal(exactBy('acme/tokens/text-to-video').blocker, 'Sets its own length, not exactly 5 s');
+  assert.equal(exactBy('acme/lipsync/audio-to-video').lengthMismatch, undefined, 'other blockers keep their reason');
+  assert.ok(
+    exact.filter((m) => !m.blocker).every((m) => m.used.duration === 5),
+    'every runnable model renders exactly 5 s',
+  );
+  const sixSeconds = (await bench.benchmarkModels({ ...settings, duration: 6, exactDuration: true }, fake)).models;
+  assert.equal(sixSeconds.find((m) => m.id === 'fal:fal-ai/veo3.1/fast')!.blocker, null, 'Veo makes 6 s exactly');
+  await assert.rejects(
+    bench.createBenchmark(
+      { key: 'bench-key-exact-length-01', prompt: 'A lighthouse beam sweeps over waves', settings: { ...settings, exactDuration: true }, models: ['fal:fal-ai/veo3.1/fast'] },
+      fake,
+    ),
+    /can’t make exactly 5 s/,
+  );
+  pass('exact length: only models that render exactly the chosen duration can run, so costs compare');
+
   const listing = await bench.benchmarkModels(settings, fake);
   const models = listing.models;
   assert.ok(listing.falConnected && listing.higgsfieldConnected);
@@ -388,6 +412,13 @@ try {
   assert.equal(grown.shots.filter((s) => s.endpoint === 'acme/clip/text-to-video').length, 2, 'a second take of the same model');
   assert.equal(grown.prompt, prompt);
   pass('adds models, retries and second takes to an existing benchmark, once per press');
+
+  // A benchmark saved before exact length existed keeps rounding each model to its nearest length.
+  await pool.query("UPDATE benchmarks SET settings = settings - 'exactDuration' WHERE id=$1", [created.id]);
+  const beforeLegacy = submitted.size;
+  await bench.addToBenchmark(created.id, { key: 'bench-key-legacy-add-01', models: ['fal:fal-ai/veo3.1/fast'] }, fake);
+  assert.equal(submitted.size, beforeLegacy + 1, 'Veo (4 s) still runs on an older 5 s benchmark');
+  pass('older benchmarks keep their rounding when models are added');
 
   const queued = await bench.createBenchmark(
     { key: 'bench-key-cancel-run-01', prompt, settings, models: ['fal:acme/clip/text-to-video', 'higgsfield:pixverse/v6/text-to-video'] },

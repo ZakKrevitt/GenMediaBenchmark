@@ -17,6 +17,7 @@ export async function GET(request: Request) {
       audio: q.get('audio') !== 'false',
       seed: seed ? Number(seed) : null,
       firstFrameId: q.get('firstFrameId') || null,
+      exactDuration: q.get('exactDuration') !== 'false',
     });
     return Response.json(result, { headers: { 'Cache-Control': 'private, max-age=60' } });
   } catch (error) {
