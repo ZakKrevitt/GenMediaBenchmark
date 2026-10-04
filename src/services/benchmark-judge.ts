@@ -7,7 +7,7 @@ import { z } from 'zod';
 import { settings } from '../lib/config';
 import { GateError } from '../lib/contracts';
 import { audit, one, pool, rows, transaction } from '../lib/db';
-import { dailyCapCents, SPENT_TODAY } from '../lib/spend';
+import { dailyCapCents, spentTodayCents } from '../lib/spend';
 import { getAsset, withAssetPath } from '../lib/storage';
 import { runMedia } from '../lib/media';
 import { frameArgs } from '../media/video-analysis';
@@ -23,6 +23,18 @@ export const judgeCents = () => {
   const n = Number(process.env.JUDGE_CENTS ?? 5);
   return Number.isFinite(n) && n >= 1 ? Math.round(n) : 5;
 };
+
+// With JUDGE_USD_PER_MTOK_IN and _OUT set (the model's price per million tokens), each scored
+// render is charged what its tokens cost, rounded up to a cent, instead of the flat reservation.
+export function judgeTokenCents(usage: unknown) {
+  const input = Number(process.env.JUDGE_USD_PER_MTOK_IN);
+  const output = Number(process.env.JUDGE_USD_PER_MTOK_OUT);
+  const u = usage as { input_tokens?: number; output_tokens?: number } | null;
+  if (!(input >= 0 && output >= 0) || !process.env.JUDGE_USD_PER_MTOK_IN || !process.env.JUDGE_USD_PER_MTOK_OUT) return null;
+  if (typeof u?.input_tokens !== 'number' || typeof u.output_tokens !== 'number') return null;
+  const usd = (u.input_tokens * input + u.output_tokens * output) / 1_000_000;
+  return Math.max(1, Math.ceil(usd * 100));
+}
 
 const score = z.number().int();
 export const verdictSchema = z.object({
@@ -72,7 +84,7 @@ export async function queueJudge(benchmarkId: string) {
     );
     if (!due.length) return { queued: 0, cents: 0 };
     const total = due.length * each;
-    const spent = await one<{ cents: number }>(SPENT_TODAY, [], db);
+    const spent = { cents: await spentTodayCents(db) };
     if (spent.cents + total > dailyCapCents())
       throw new GateError(
         'BUDGET_EXCEEDED',
@@ -162,16 +174,22 @@ export async function judgeBenchmarkShots(provider: Fetcher = openAiJudge) {
       if (ref) startImage = `data:${ref.content_type};base64,${(await getAsset(ref.image_key)).toString('base64')}`;
     }
     const { verdict, usage } = await provider.judge({ prompt: shot.prompt, frames, startImage, seconds });
-    await pool.query("UPDATE renders SET judge_state='DONE',judge=$2 WHERE id=$1", [
-      shot.id,
-      JSON.stringify({
-        ...cleanVerdict(verdict),
-        model: settings().llmModel,
-        version: JUDGE_VERSION,
-        usage,
-        latencyMs: Date.now() - started,
-      }),
-    ]);
+    const tokenCents = judgeTokenCents(usage);
+    await pool.query(
+      "UPDATE renders SET judge_state='DONE',judge=$2,judge_cents=coalesce($3,judge_cents) WHERE id=$1",
+      [
+        shot.id,
+        JSON.stringify({
+          ...cleanVerdict(verdict),
+          model: settings().llmModel,
+          version: JUDGE_VERSION,
+          usage,
+          latencyMs: Date.now() - started,
+          cost: tokenCents === null ? 'reserved' : 'tokens',
+        }),
+        tokenCents,
+      ],
+    );
   } catch (error) {
     // Nothing usable came back, so the reservation is released.
     await pool.query("UPDATE renders SET judge_state='FAILED',judge_cents=0,judge=$2 WHERE id=$1", [

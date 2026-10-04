@@ -8,7 +8,7 @@ import {
   parseInputSpec,
 } from '../src/lib/fal-schema';
 import { parseAnalysis } from '../src/media/video-analysis';
-import { eloIntervals, eloRatings } from '../src/lib/elo';
+import { btIntervals, btRatings, shrunkRating, type Vote } from '../src/lib/rating';
 import { STANDARD_SUITES } from '../src/lib/benchmark-suites';
 import { frontier } from '../src/lib/frontier';
 import { cleanVerdict } from '../src/services/benchmark-judge';
@@ -213,18 +213,63 @@ describe('benchmark schema mapping', () => {
     expect(blockerFor(endFrame, 'image')).toBe('Needs tail image url');
   });
 
-  it('turns head-to-head votes into Elo, with ties at half and "both bad" ignored', () => {
-    const r = eloRatings([
+  it('rates head-to-head votes with Bradley-Terry: ties at half, "both bad" ignored', () => {
+    const r = btRatings([
       { left: 'fal:a', right: 'fal:b', outcome: 'left' },
       { left: 'fal:b', right: 'higgsfield:c', outcome: 'tie' },
       { left: 'fal:a', right: 'higgsfield:c', outcome: 'both_bad' },
     ]);
-    expect(r.get('fal:a')).toEqual({ rating: 1016, games: 1 });
-    // b lost to a (984), then tied c: a tie against a lower-rated model costs c and lifts b.
-    expect(r.get('fal:b')).toEqual({ rating: 985, games: 2 });
-    expect(r.get('higgsfield:c')).toEqual({ rating: 999, games: 1 });
-    const total = [...r.values()].reduce((sum, x) => sum + x.rating, 0);
-    expect(Math.abs(total - 3000)).toBeLessThanOrEqual(1);
+    expect(r.get('fal:a')!.games).toBe(1);
+    expect(r.get('fal:b')!.games).toBe(2);
+    expect(r.get('higgsfield:c')!.games).toBe(1);
+    expect(r.get('fal:a')!.rating).toBeGreaterThan(r.get('higgsfield:c')!.rating);
+    expect(r.get('higgsfield:c')!.rating).toBeGreaterThan(r.get('fal:b')!.rating);
+    // An unbeaten model stays finite thanks to the one virtual tie against an average opponent.
+    const unbeaten = btRatings(Array.from({ length: 20 }, () => ({ left: 'x', right: 'y', outcome: 'left' as const })));
+    expect(Number.isFinite(unbeaten.get('x')!.rating)).toBe(true);
+  });
+
+  it('gives the same ratings whatever order the votes were cast in', () => {
+    const votes: Vote[] = [
+      { left: 'a', right: 'b', outcome: 'left' },
+      { left: 'b', right: 'c', outcome: 'left' },
+      { left: 'a', right: 'c', outcome: 'tie' },
+      { left: 'c', right: 'a', outcome: 'right' },
+      { left: 'b', right: 'a', outcome: 'left' },
+    ];
+    expect(btRatings([...votes].reverse())).toEqual(btRatings(votes));
+    expect(btRatings([votes[3], votes[0], votes[4], votes[1], votes[2]])).toEqual(btRatings(votes));
+  });
+
+  it('bootstraps by prompt, never pads a missing model, and withholds intervals under three prompts', () => {
+    // A weak model that only appears on one prompt among many.
+    const votes: Vote[] = [];
+    for (let p = 0; p < 12; p++)
+      for (let i = 0; i < 4; i++)
+        votes.push({ left: 'strong', right: 'mid', outcome: i === 0 ? 'right' : 'left', group: `p${p}` });
+    for (let i = 0; i < 5; i++) votes.push({ left: 'mid', right: 'weak', outcome: 'left', group: 'p0' });
+    const intervals = btIntervals(votes);
+    expect(intervals.get('weak')).toEqual({ low: null, high: null, prompts: 1 });
+    const strong = intervals.get('strong')!;
+    expect(strong.prompts).toBe(12);
+    expect(strong.low).not.toBeNull();
+    expect(strong.low!).toBeGreaterThan(1000);
+    // Old behaviour padded models missing from a resample with 1000; the weak model's point
+    // estimate must stay well below average.
+    expect(btRatings(votes).get('weak')!.rating).toBeLessThan(900);
+    // Correlated votes: one prompt repeated 48 times is one prompt, so it gets no interval.
+    const onePrompt = btIntervals(votes.slice(0, 48).map((v) => ({ ...v, group: 'same' })));
+    expect(onePrompt.get('strong')).toEqual({ low: null, high: null, prompts: 1 });
+    // Deterministic between page loads.
+    expect(btIntervals(votes)).toEqual(intervals);
+  });
+
+  it('needs several ratings before a model ranks on stars', () => {
+    const overall = 4;
+    const lucky = shrunkRating(5, 1, overall)!;
+    const steady = shrunkRating(4.6 * 20, 20, overall)!;
+    expect(steady).toBeGreaterThan(lucky);
+    expect(shrunkRating(0, 0, overall)).toBeNull();
   });
 
   it('keeps judge scores between 1 and 10 and trims its text', () => {
@@ -252,17 +297,6 @@ describe('benchmark schema mapping', () => {
       { id: 'pricey-best', cost: 300, q: 9 },
     ];
     expect(frontier(pts, (p) => p.cost, (p) => p.q).map((p) => p.id)).toEqual(['cheap-ok', 'mid-good', 'pricey-best']);
-  });
-
-  it('gives wide Elo intervals on few votes and narrower ones on many', () => {
-    const few = eloIntervals([{ left: 'a', right: 'b', outcome: 'left' }]);
-    const many = eloIntervals(
-      Array.from({ length: 60 }, (_, i) => ({ left: 'a', right: 'b', outcome: i % 5 === 0 ? ('right' as const) : ('left' as const) })),
-    );
-    const width = (m: Map<string, { low: number; high: number }>) => m.get('a')!.high - m.get('a')!.low;
-    expect(many.get('a')!.low).toBeGreaterThan(1000);
-    expect(width(many)).toBeLessThan(width(few) + 200);
-    expect(eloIntervals([{ left: 'a', right: 'b', outcome: 'left' }])).toEqual(few);
   });
 
   it('ships standard suites that fit a benchmark run', () => {

@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { audit, one, pool, rows, transaction } from '../lib/db';
 import { GateError } from '../lib/contracts';
-import { dailyCapCents, SPENT_TODAY } from '../lib/spend';
+import { dailyCapCents, spentTodayCents } from '../lib/spend';
 import {
   ASPECTS,
   RESOLUTIONS,
@@ -28,7 +28,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { getAsset, putAsset, withAssetPath } from '../lib/storage';
-import { eloIntervals, eloRatings, type Vote } from '../lib/elo';
+import { btIntervals, btRatings, shrunkRating, type Vote } from '../lib/rating';
 import { judgeCents, type Verdict } from './benchmark-judge';
 import { settings } from '../lib/config';
 import { runMedia } from '../lib/media';
@@ -939,7 +939,7 @@ async function launch(
     await db.query("SELECT pg_advisory_xact_lock(hashtext('bench:spend'))");
     const again = await done(db);
     if (again) return { id: again.id, shots: [] as { id: string; p: Planned }[] };
-    const spent = await one<{ cents: number }>(SPENT_TODAY, [], db);
+    const spent = { cents: await spentTodayCents(db) };
     const cap = dailyCapCents();
     if (spent.cents + total > cap)
       throw new GateError(
@@ -1198,7 +1198,7 @@ function publicBenchShot(r: BenchShotRow) {
 }
 export type BenchShot = ReturnType<typeof publicBenchShot>;
 
-export async function benchmarkState(suiteId: string | null = null) {
+export async function benchmarkState(scope: Partial<LeaderboardScope> = {}) {
   const [benches, shots, spent, votes] = await Promise.all([
     rows<{
       id: string;
@@ -1215,7 +1215,7 @@ export async function benchmarkState(suiteId: string | null = null) {
       `SELECT s.* FROM renders s JOIN (SELECT id FROM benchmarks ORDER BY created_at DESC LIMIT 40) b
          ON b.id = s.benchmark_id ORDER BY s.created_at`,
     ),
-    one<{ cents: number }>(SPENT_TODAY),
+    spentTodayCents().then((cents) => ({ cents })),
     rows<{
       benchmark_id: string;
       left_shot_id: string;
@@ -1240,8 +1240,8 @@ export async function benchmarkState(suiteId: string | null = null) {
         .filter((v) => v.benchmark_id === b.id)
         .map((v) => ({ left: v.left_shot_id, right: v.right_shot_id, outcome: v.outcome })),
     })),
-    leaderboard: await leaderboard(suiteId),
-    leaderboardSuite: suiteId,
+    ...(await leaderboard(scope).then(({ rows, ...info }) => ({ leaderboard: rows, leaderboardInfo: info }))),
+    leaderboardSuite: scope.suiteId ?? null,
     spentTodayCents: spent.cents,
     dailyCapCents: dailyCapCents(),
     judgeCentsEach: judgeCents(),
@@ -1249,99 +1249,173 @@ export async function benchmarkState(suiteId: string | null = null) {
   };
 }
 
-// One row per model across every benchmark: reliability, speed, cost and your ratings.
-// Scoped to one suite when given, otherwise every benchmark.
-async function leaderboard(suiteId: string | null = null) {
-  const list = await rows<{
-    endpoint: string;
-    provider: Provider;
-    name: string;
-    runs: number;
-    done: number;
-    failed: number;
-    median_total: string | null;
-    median_run: string | null;
-    median_queue: string | null;
-    avg_cents: string | null;
-    cents_per_second: string | null;
-    avg_rating: string | null;
-    median_motion: string | null;
-    avg_judge: string | null;
-    judged: number;
-    analysed: number;
-    with_issues: number;
-    ratings: number;
-    wins: number;
-  }>(
-    `SELECT s.endpoint, s.provider,
-       (array_agg(coalesce(s.request_settings->>'name', s.model) ORDER BY s.created_at DESC))[1] AS name,
-       count(*)::int runs,
-       count(*) FILTER (WHERE s.state='COMPLETE')::int done,
-       count(*) FILTER (WHERE s.state IN ('FAILED','UNKNOWN'))::int failed,
-       percentile_cont(0.5) WITHIN GROUP (ORDER BY extract(epoch FROM s.finished_at - s.submitted_at))
-         FILTER (WHERE s.state='COMPLETE' AND s.finished_at IS NOT NULL) median_total,
-       percentile_cont(0.5) WITHIN GROUP (ORDER BY s.run_seconds) FILTER (WHERE s.state='COMPLETE') median_run,
-       percentile_cont(0.5) WITHIN GROUP (ORDER BY s.queue_seconds) FILTER (WHERE s.state='COMPLETE') median_queue,
-       avg(coalesce(s.billed_cents, s.estimated_cents)) FILTER (WHERE s.state='COMPLETE') avg_cents,
-       avg(coalesce(s.billed_cents, s.estimated_cents) / nullif((s.output->>'seconds')::numeric, 0))
-         FILTER (WHERE s.state='COMPLETE') cents_per_second,
-       avg(s.rating) avg_rating,
-       avg((s.judge->>'overall')::numeric) FILTER (WHERE s.judge_state='DONE') avg_judge,
-       count(*) FILTER (WHERE s.judge_state='DONE')::int judged,
-       percentile_cont(0.5) WITHIN GROUP (ORDER BY (s.analysis->>'motion')::numeric)
-         FILTER (WHERE s.analysis ? 'motion') median_motion,
-       count(*) FILTER (WHERE s.analysis ? 'issues')::int analysed,
-       count(*) FILTER (WHERE jsonb_array_length(coalesce(s.analysis->'issues','[]'::jsonb)) > 0)::int with_issues,
-       count(s.rating)::int ratings,
-       count(b.id)::int wins
-     FROM renders s LEFT JOIN benchmarks b ON b.winner_shot_id = s.id
-     WHERE s.benchmark_id IS NOT NULL
-       AND ($1::uuid IS NULL OR s.benchmark_id IN (SELECT id FROM benchmarks WHERE suite_id = $1))
-     GROUP BY s.provider, s.endpoint
-     ORDER BY avg(s.rating) DESC NULLS LAST, count(b.id) DESC, count(*) FILTER (WHERE s.state='COMPLETE') DESC`,
-    [suiteId],
-  );
+// The settings a render actually ran with after snapping, e.g. "5 s · 720p · 9:16". Renders only
+// compare fairly within one of these.
+const SETUP = `concat_ws(' · ', coalesce((s.request_settings->'used'->>'duration') || ' s', 'own length'), s.request_settings->'used'->>'resolution', s.request_settings->'used'->>'aspectRatio')`;
+
+export const leaderboardScope = z.object({
+  suiteId: z.string().uuid().nullable().default(null),
+  /** Only renders made at these effective settings. */
+  setup: z.string().max(80).nullable().default(null),
+  /** Only prompts that every ranked model has a finished render of. */
+  commonOnly: z.boolean().default(false),
+});
+export type LeaderboardScope = z.infer<typeof leaderboardScope>;
+
+// Renders in scope. $1 suite, $2 effective settings, $3 common prompts only.
+const SCOPED = `WITH scope AS (
+    SELECT s.*, b.prompt AS bench_prompt, ${SETUP} AS setup
+    FROM renders s JOIN benchmarks b ON b.id = s.benchmark_id
+    WHERE ($1::uuid IS NULL OR b.suite_id = $1) AND ($2::text IS NULL OR ${SETUP} = $2)
+  ),
+  finishers AS (SELECT count(DISTINCT provider || ':' || endpoint) n FROM scope WHERE state='COMPLETE'),
+  common AS (
+    SELECT bench_prompt FROM scope WHERE state='COMPLETE' GROUP BY bench_prompt
+    HAVING count(DISTINCT provider || ':' || endpoint) = (SELECT n FROM finishers)
+  ),
+  ranked AS (SELECT * FROM scope WHERE NOT $3::boolean OR bench_prompt IN (SELECT bench_prompt FROM common))`;
+
+// One row per model: reliability, speed, cost, ratings and arena strength, each with the number
+// of renders or votes behind it. Scoped to a suite, one set of effective settings, and optionally
+// the prompts every model finished, so models are compared on the same work.
+async function leaderboard(raw: Partial<LeaderboardScope> = {}) {
+  const scope = leaderboardScope.parse(raw);
+  const params = [scope.suiteId, scope.setup, scope.commonOnly];
+  const [list, cast, setups, common] = await Promise.all([
+    rows<{
+      endpoint: string;
+      provider: Provider;
+      name: string;
+      runs: number;
+      done: number;
+      failed: number;
+      median_total: string | null;
+      median_run: string | null;
+      median_queue: string | null;
+      avg_cents: string | null;
+      billed: number;
+      cost_cents: string | null;
+      output_seconds: string | null;
+      rating_sum: string | null;
+      ratings: number;
+      median_motion: string | null;
+      avg_judge: string | null;
+      judged: number;
+      analysed: number;
+      with_issues: number;
+      wins: number;
+      setups: number;
+      prompts: number;
+    }>(
+      `${SCOPED}
+       SELECT s.endpoint, s.provider,
+         (array_agg(coalesce(s.request_settings->>'name', s.model) ORDER BY s.created_at DESC))[1] AS name,
+         count(*)::int runs,
+         count(*) FILTER (WHERE s.state='COMPLETE')::int done,
+         count(*) FILTER (WHERE s.state IN ('FAILED','UNKNOWN'))::int failed,
+         percentile_cont(0.5) WITHIN GROUP (ORDER BY extract(epoch FROM s.finished_at - s.submitted_at))
+           FILTER (WHERE s.state='COMPLETE' AND s.finished_at IS NOT NULL) median_total,
+         percentile_cont(0.5) WITHIN GROUP (ORDER BY s.run_seconds) FILTER (WHERE s.state='COMPLETE') median_run,
+         percentile_cont(0.5) WITHIN GROUP (ORDER BY s.queue_seconds) FILTER (WHERE s.state='COMPLETE') median_queue,
+         avg(coalesce(s.billed_cents, s.estimated_cents)) FILTER (WHERE s.state='COMPLETE') avg_cents,
+         count(*) FILTER (WHERE s.state='COMPLETE' AND s.billed_cents IS NOT NULL)::int billed,
+         sum(coalesce(s.billed_cents, s.estimated_cents))
+           FILTER (WHERE s.state='COMPLETE' AND (s.output->>'seconds')::numeric > 0) cost_cents,
+         sum((s.output->>'seconds')::numeric)
+           FILTER (WHERE s.state='COMPLETE' AND (s.output->>'seconds')::numeric > 0) output_seconds,
+         sum(s.rating) rating_sum,
+         count(s.rating)::int ratings,
+         avg((s.judge->>'overall')::numeric) FILTER (WHERE s.judge_state='DONE') avg_judge,
+         count(*) FILTER (WHERE s.judge_state='DONE')::int judged,
+         percentile_cont(0.5) WITHIN GROUP (ORDER BY (s.analysis->>'motion')::numeric)
+           FILTER (WHERE s.analysis ? 'motion') median_motion,
+         count(*) FILTER (WHERE s.analysis ? 'issues')::int analysed,
+         count(*) FILTER (WHERE jsonb_array_length(coalesce(s.analysis->'issues','[]'::jsonb)) > 0)::int with_issues,
+         count(w.id)::int wins,
+         count(DISTINCT s.setup) FILTER (WHERE s.state='COMPLETE')::int setups,
+         count(DISTINCT s.bench_prompt) FILTER (WHERE s.state='COMPLETE')::int prompts
+       FROM ranked s LEFT JOIN benchmarks w ON w.winner_shot_id = s.id
+       GROUP BY s.provider, s.endpoint`,
+      params,
+    ),
+    rows<{ left: string; right: string; outcome: Vote['outcome']; grp: string }>(
+      `${SCOPED}
+       SELECT l.provider || ':' || l.endpoint AS left, r.provider || ':' || r.endpoint AS right, v.outcome, l.bench_prompt grp
+       FROM benchmark_votes v JOIN ranked l ON l.id = v.left_shot_id JOIN ranked r ON r.id = v.right_shot_id`,
+      params,
+    ),
+    rows<{ setup: string; renders: number; models: number }>(
+      `${SCOPED}
+       SELECT setup, count(*)::int renders, count(DISTINCT provider || ':' || endpoint)::int models
+       FROM scope WHERE state='COMPLETE' AND setup <> '' GROUP BY setup ORDER BY count(*) DESC`,
+      [scope.suiteId, null, false],
+    ),
+    one<{ prompts: number }>(`${SCOPED} SELECT count(*)::int prompts FROM common`, params),
+  ]);
   const n = (v: string | null) => (v === null ? null : Math.round(Number(v) * 10) / 10);
-  const cast = await rows<{ left: string; right: string; outcome: Vote['outcome'] }>(
-    `SELECT l.provider || ':' || l.endpoint AS left, r.provider || ':' || r.endpoint AS right, v.outcome
-     FROM benchmark_votes v JOIN renders l ON l.id = v.left_shot_id JOIN renders r ON r.id = v.right_shot_id
-     WHERE $1::uuid IS NULL OR v.benchmark_id IN (SELECT id FROM benchmarks WHERE suite_id = $1)
-     ORDER BY v.created_at`,
-    [suiteId],
+  const votes = cast.map((v) => ({ left: v.left, right: v.right, outcome: v.outcome, group: v.grp }));
+  const strength = btRatings(votes);
+  const spread = btIntervals(votes);
+  const ratingTotal = list.reduce((a, r) => a + Number(r.rating_sum ?? 0), 0);
+  const ratingCount = list.reduce((a, r) => a + r.ratings, 0);
+  const overall = ratingCount ? ratingTotal / ratingCount : 3;
+  const rowsOut = list.map((r) => {
+    const id = modelKey(r.provider, r.endpoint);
+    const arena = strength.get(id);
+    const interval = spread.get(id);
+    return {
+      id,
+      provider: r.provider,
+      endpoint: r.endpoint,
+      name: r.name,
+      runs: r.runs,
+      done: r.done,
+      failed: r.failed,
+      medianTotalSeconds: n(r.median_total),
+      medianRunSeconds: n(r.median_run),
+      medianQueueSeconds: n(r.median_queue),
+      avgCents: n(r.avg_cents),
+      /** Finished renders whose cost is the provider's bill; the rest are estimates. */
+      billed: r.billed,
+      /** Total cost over total delivered seconds, so long and short clips weigh by length. */
+      centsPerSecond:
+        r.cost_cents !== null && Number(r.output_seconds) > 0
+          ? Math.round((Number(r.cost_cents) / Number(r.output_seconds)) * 10) / 10
+          : null,
+      avgRating: r.ratings ? Math.round((Number(r.rating_sum) / r.ratings) * 10) / 10 : null,
+      /** The average pulled toward everyone's average until enough ratings back it; used to rank. */
+      ratingScore: (() => {
+        const v = shrunkRating(Number(r.rating_sum ?? 0), r.ratings, overall);
+        return v === null ? null : Math.round(v * 100) / 100;
+      })(),
+      ratings: r.ratings,
+      medianMotion: n(r.median_motion),
+      /** The AI judge's average overall score out of 10, and how many renders it scored. */
+      judgeScore: n(r.avg_judge),
+      judged: r.judged,
+      /** Bradley-Terry strength from blind votes (1000 is average), and the votes behind it. */
+      arena: arena?.rating ?? null,
+      arenaVotes: arena?.games ?? 0,
+      /** Prompts those votes came from; the interval needs at least three. */
+      arenaPrompts: interval?.prompts ?? 0,
+      arenaLow: interval?.low ?? null,
+      arenaHigh: interval?.high ?? null,
+      /** Share of analysed renders with a freeze, black frames, no motion or missing sound. */
+      issueRate: r.analysed ? Math.round((r.with_issues / r.analysed) * 100) : null,
+      analysed: r.analysed,
+      wins: r.wins,
+      /** Distinct effective settings among finished renders; more than one is not like for like. */
+      setups: r.setups,
+      prompts: r.prompts,
+    };
+  });
+  rowsOut.sort(
+    (a, b) => (b.ratingScore ?? -1) - (a.ratingScore ?? -1) || b.wins - a.wins || b.done - a.done,
   );
-  const elo = eloRatings(cast);
-  const spread = eloIntervals(cast);
-  return list.map((r) => ({
-    id: modelKey(r.provider, r.endpoint),
-    provider: r.provider,
-    endpoint: r.endpoint,
-    name: r.name,
-    runs: r.runs,
-    done: r.done,
-    failed: r.failed,
-    medianTotalSeconds: n(r.median_total),
-    medianRunSeconds: n(r.median_run),
-    medianQueueSeconds: n(r.median_queue),
-    avgCents: n(r.avg_cents),
-    centsPerSecond: n(r.cents_per_second),
-    avgRating: n(r.avg_rating),
-    medianMotion: n(r.median_motion),
-    /** The AI judge's average overall score out of 10, and how many renders it scored. */
-    judgeScore: n(r.avg_judge),
-    judged: r.judged,
-    /** Elo from blind head-to-head votes, and how many votes it rests on. */
-    arena: elo.get(modelKey(r.provider, r.endpoint))?.rating ?? null,
-    arenaVotes: elo.get(modelKey(r.provider, r.endpoint))?.games ?? 0,
-    /** 95% bootstrap interval for the Elo; wide means the ranking is not settled. */
-    arenaLow: spread.get(modelKey(r.provider, r.endpoint))?.low ?? null,
-    arenaHigh: spread.get(modelKey(r.provider, r.endpoint))?.high ?? null,
-    /** Share of analysed renders with a freeze, black frames, no motion or missing sound. */
-    issueRate: r.analysed ? Math.round((r.with_issues / r.analysed) * 100) : null,
-    ratings: r.ratings,
-    wins: r.wins,
-  }));
+  return { rows: rowsOut, scope, setups, commonPrompts: common.prompts };
 }
-export type LeaderRow = Awaited<ReturnType<typeof leaderboard>>[number];
+export type LeaderRow = Awaited<ReturnType<typeof leaderboard>>['rows'][number];
+export type LeaderboardInfo = Omit<Awaited<ReturnType<typeof leaderboard>>, 'rows'>;
 
 /** Every render one model has made across benchmarks, newest first, with its failure reasons. */
 export async function modelHistory(id: string) {

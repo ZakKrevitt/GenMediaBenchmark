@@ -14,9 +14,18 @@ It runs on your machine with your own provider keys. There are no accounts, no h
 - **Priced before you spend.** fal models are priced from fal's pricing API (or its historical average), Higgsfield models from Higgsfield's free per-request quote. A daily spend limit stops a run that would go over.
 - **Real timing and cost.** Queue time, generation time and, for fal, the billed cost are read back from the provider after each render.
 - **Objective checks.** ffmpeg measures motion, hard cuts, freezes, black frames, silence and loudness on every render, plus a six-frame filmstrip.
-- **Judging.** Rate and annotate renders, pick a winner, vote blind in the Arena (turned into Elo with confidence intervals), or let an optional AI judge score frames blind.
+- **Same length, same footing.** With Exact length on (the default), only models that can render exactly the duration you chose take part, so their costs compare directly.
+- **Judging.** Rate and annotate renders, pick a winner, vote blind in the Arena, or let an optional AI judge score frames blind.
 - **Suites and takes.** Run up to eight prompts in one go, or several takes per model to see how much a model varies. Five standard suites are built in.
-- **Leaderboard.** Every model across every benchmark: reliability, median speed, cost per output second, ratings, Elo, judge score and issue rate. Export to CSV, copy any request as cURL.
+- **Leaderboard.** Every model across every benchmark: reliability, median speed, cost per output second, ratings, arena rating, judge score and issue rate, each with the count behind it. Export to CSV, copy any request as cURL.
+
+### How models are ranked
+
+- **Arena** is a Bradley-Terry rating fitted to every blind vote at once (as LMArena does), so the order votes were cast in does not matter. 1000 is average. Its 95% range comes from resampling whole prompts, since votes on one prompt are correlated, and is only shown once a model's votes span three prompts.
+- **Your star ratings** rank by an average pulled toward everyone's average until a model has several ratings, so one 5-star render cannot outrank twenty that average 4.6.
+- **Compare like with like.** Every render records the settings it actually ran with (length, resolution, frame). Filter the leaderboard to one of these, and turn on *Common prompts only* to rank each model only on prompts every model finished. Models that ran at more than one setting are flagged.
+- **Cost** is the provider's bill where it arrived (fal with an admin key) and an estimate otherwise, marked *est.* Cost per output second is total cost over total seconds.
+- **The AI judge** sees six still frames and no sound, so its motion score is a weak signal and labelled that way.
 
 ## Requirements
 
@@ -49,7 +58,11 @@ One provider is enough; models from a provider without a key are hidden. Change 
 
 ### Optional: AI judge
 
-Add an OpenAI key and a model that accepts images in setup (or set `OPENAI_API_KEY` and `LLM_MODEL`) to enable the **AI judge** button. Each judged render reserves `JUDGE_CENTS` (default 5) against the daily limit.
+Add an OpenAI key and a model that accepts images in setup (or set `OPENAI_API_KEY` and `LLM_MODEL`) to enable the **AI judge** button. Each judged render reserves `JUDGE_CENTS` (default 5) against the daily limit. Set `JUDGE_USD_PER_MTOK_IN` and `JUDGE_USD_PER_MTOK_OUT` to your model's price per million tokens and each render is charged what its tokens actually cost instead.
+
+### Daily limit
+
+`DAILY_LIMIT_USD` resets at midnight on the computer running the app. A render that fails costs nothing, unless the provider reports billing it anyway.
 
 ### fal billing
 

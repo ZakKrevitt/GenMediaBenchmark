@@ -911,3 +911,23 @@ th[aria-sort] .sortHead {
   color: var(--text-muted);
   font-size: 12px;
 }
+
+/* Leaderboard scope: suite, effective settings and common prompts. */
+.scope {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.scope select {
+  width: auto;
+  max-width: 100%;
+}
+.scope .check {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--text-sm);
+}

@@ -9,8 +9,13 @@ export const maxDuration = 300;
 export async function GET(request: Request) {
   try {
     await localOnly(request);
-    const suite = new URL(request.url).searchParams.get('suite');
-    return Response.json(await benchmarkState(suite ? z.string().uuid().parse(suite) : null), { headers: { 'Cache-Control': 'private, no-store' } });
+    const q = new URL(request.url).searchParams;
+    const scope = {
+      suiteId: q.get('suite') ? z.string().uuid().parse(q.get('suite')) : null,
+      setup: q.get('setup') || null,
+      commonOnly: q.get('common') === 'true',
+    };
+    return Response.json(await benchmarkState(scope), { headers: { 'Cache-Control': 'private, no-store' } });
   } catch (error) {
     return errorResponse(error);
   }

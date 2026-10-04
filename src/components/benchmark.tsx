@@ -25,7 +25,13 @@ import {
   Star,
   Trophy,
 } from 'lucide-react';
-import type { BenchModel, BenchRunSettings, BenchShot, LeaderRow } from '@/services/benchmark';
+import type {
+  BenchModel,
+  BenchRunSettings,
+  BenchShot,
+  LeaderboardInfo,
+  LeaderRow,
+} from '@/services/benchmark';
 import { downsize } from '@/lib/downsize';
 import { frontier } from '@/lib/frontier';
 import { STANDARD_SUITES } from '@/lib/benchmark-suites';
@@ -50,6 +56,7 @@ type Outcome = 'left' | 'right' | 'tie' | 'both_bad';
 type State = {
   benchmarks: Bench[];
   leaderboard: LeaderRow[];
+  leaderboardInfo: LeaderboardInfo;
   spentTodayCents: number;
   dailyCapCents: number;
   judgeCentsEach: number;
@@ -145,6 +152,8 @@ export function Benchmark({ active }: { active: boolean }) {
   const [extraPrompts, setExtraPrompts] = useState<string[]>([]);
   const [suiteName, setSuiteName] = useState('');
   const [suite, setSuite] = useState<string | null>(null);
+  const [setup, setSetup] = useState<string | null>(null);
+  const [commonOnly, setCommonOnly] = useState(false);
   const prompts = [prompt, ...extraPrompts].map((p) => p.trim()).filter((p) => p.length >= 3);
   const [uploading, setUploading] = useState(false);
   const [imageMode, setImageMode] = useState(false);
@@ -195,12 +204,17 @@ export function Benchmark({ active }: { active: boolean }) {
 
   const load = useCallback(async () => {
     try {
-      setState(await api<State>(`/api/benchmarks${suite ? `?suite=${suite}` : ''}`));
+      const q = new URLSearchParams({
+        ...(suite ? { suite } : {}),
+        ...(setup ? { setup } : {}),
+        ...(commonOnly ? { common: 'true' } : {}),
+      });
+      setState(await api<State>(`/api/benchmarks${q.size ? `?${q}` : ''}`));
       setError('');
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not load benchmarks');
     }
-  }, [suite]);
+  }, [suite, setup, commonOnly]);
   const anyRunning =
     state?.benchmarks.some((b) =>
       b.shots.some(
@@ -813,12 +827,17 @@ export function Benchmark({ active }: { active: boolean }) {
         </section>
       )}
 
-      {state && (state.leaderboard.length > 0 || suite) && (
+      {state && (state.leaderboard.length > 0 || suite || setup || commonOnly) && (
         <Leaderboard
           rows={state.leaderboard}
+          info={state.leaderboardInfo}
           suites={suitesOf(state.benchmarks)}
           suite={suite}
           setSuite={setSuite}
+          setup={setup}
+          setSetup={setSetup}
+          commonOnly={commonOnly}
+          setCommonOnly={setCommonOnly}
         />
       )}
     </div>
@@ -1493,8 +1512,11 @@ function Cell({
               {shot.judge ? (
                 <>
                   <strong className={styles.judgeScore}>{shot.judge.overall}/10</strong> · prompt{' '}
-                  {shot.judge.adherence} · look {shot.judge.visual} · motion {shot.judge.motion} ·
-                  clean {shot.judge.artifacts}
+                  {shot.judge.adherence} · look {shot.judge.visual} ·{' '}
+                  <span title="Judged from six still frames with no sound, so a weak signal">
+                    motion {shot.judge.motion} (from stills)
+                  </span>{' '}
+                  · clean {shot.judge.artifacts}
                   <span className={styles.judgeSummary}>{shot.judge.summary}</span>
                   {shot.judge.problems.map((p) => (
                     <span key={p} className={styles.flag}>
@@ -1564,11 +1586,14 @@ function Cell({
   );
 }
 
-/** Votes before an Elo's ± interval means anything. */
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
+/** Votes before an arena range means anything. */
 const ARENA_SETTLED = 10;
+/** Star ratings before a model's average is shown without a "few" warning. */
+const RATINGS_SETTLED = 3;
 
 const COLUMNS: { id: keyof LeaderRow; label: string; low?: boolean }[] = [
-  { id: 'arena', label: 'Arena Elo' },
+  { id: 'arena', label: 'Arena' },
   { id: 'judgeScore', label: 'Judge' },
   { id: 'avgRating', label: 'Rating' },
   { id: 'wins', label: 'Picks' },
@@ -1595,21 +1620,34 @@ const suitesOf = (list: Bench[]) => {
 
 function Leaderboard({
   rows,
+  info,
   suites,
   suite,
   setSuite,
+  setup,
+  setSetup,
+  commonOnly,
+  setCommonOnly,
 }: {
   rows: LeaderRow[];
+  info: LeaderboardInfo;
   suites: { id: string; name: string; prompts: number }[];
   suite: string | null;
   setSuite: (id: string | null) => void;
+  setup: string | null;
+  setSetup: (v: string | null) => void;
+  commonOnly: boolean;
+  setCommonOnly: (v: boolean) => void;
 }) {
   const [openModel, setOpenModel] = useState<LeaderRow | null>(null);
   const [by, setBy] = useState<keyof LeaderRow>('avgRating');
   const col = COLUMNS.find((c) => c.id === by);
+  // Stars rank by the evidence-weighted score, so one 5-star render cannot top the table.
+  const sortKey = (by === 'avgRating' ? 'ratingScore' : by) as keyof LeaderRow;
+  const mixed = !setup && rows.some((r) => r.setups > 1);
   const sorted = [...rows].sort((a, b) => {
-    const x = a[by] as number | null;
-    const y = b[by] as number | null;
+    const x = a[sortKey] as number | null;
+    const y = b[sortKey] as number | null;
     if (x === null) return 1;
     if (y === null) return -1;
     return col?.low ? x - y : y - x;
@@ -1618,16 +1656,19 @@ function Leaderboard({
     const v = r[id] as number | null;
     if (id === 'done') return `${r.done} of ${r.runs}`;
     if (v === null) return '–';
-    if (id === 'avgRating') return `${v.toFixed(1)} (${r.ratings})`;
+    if (id === 'avgRating')
+      return `${v.toFixed(1)} (${plural(r.ratings, 'rating')}${r.ratings < RATINGS_SETTLED ? ', few' : ''})`;
     if (id === 'arena')
-      // Resampling a handful of votes understates the doubt, so small counts say so instead.
-      return r.arenaVotes < ARENA_SETTLED
-        ? `${v} (${r.arenaVotes}, provisional)`
-        : `${v} ±${Math.round(((r.arenaHigh ?? v) - (r.arenaLow ?? v)) / 2)} (${r.arenaVotes})`;
+      // An interval needs votes from several prompts; until then the rating is provisional.
+      return r.arenaVotes < ARENA_SETTLED || r.arenaLow === null || r.arenaHigh === null
+        ? `${v} (${plural(r.arenaVotes, 'vote')}, ${plural(r.arenaPrompts, 'prompt')}, provisional)`
+        : `${v} (${r.arenaLow}–${r.arenaHigh}, ${plural(r.arenaVotes, 'vote')}, ${plural(r.arenaPrompts, 'prompt')})`;
     if (id === 'judgeScore') return `${v}/10 (${r.judged})`;
-    if (id === 'avgCents' || id === 'centsPerSecond') return money(v);
+    if (id === 'avgCents' || id === 'centsPerSecond')
+      // Estimates (quotes, published rates) are marked apart from what the provider billed.
+      return `${money(v)}${r.billed < r.done ? (r.billed ? ` (${r.billed} of ${r.done} billed)` : ' est.') : ''}`;
     if (id.endsWith('Seconds')) return secs(v);
-    if (id === 'issueRate') return `${v}%`;
+    if (id === 'issueRate') return `${v}% (${r.analysed})`;
     if (id === 'medianMotion') return `${motionWord(v)} (${v})`;
     return String(v);
   };
@@ -1637,29 +1678,72 @@ function Leaderboard({
         <div>
           <h2>Leaderboard</h2>
           <p>
-            Every benchmark so far, by model and provider. Arena Elo comes from blind head-to-head
-            votes. Times are medians of finished renders; cost is fal’s bill once it arrives, or
-            Higgsfield’s quote.
+            Every benchmark so far, by model and provider, with the count behind each number. Arena
+            is a Bradley-Terry rating from blind head-to-head votes (1000 is average), with a 95%
+            range once votes span three prompts. Ratings rank by an average that needs several
+            ratings to count fully. Cost is the provider’s bill where it arrived and an estimate
+            (est.) otherwise; per output second is total cost over total seconds.
           </p>
         </div>
-        {suites.length > 0 && (
-          <select
-            value={suite ?? ''}
-            onChange={(e) => setSuite(e.target.value || null)}
-            aria-label="Leaderboard scope"
+        <div className={styles.scope}>
+          {suites.length > 0 && (
+            <select
+              value={suite ?? ''}
+              onChange={(e) => setSuite(e.target.value || null)}
+              aria-label="Leaderboard scope"
+            >
+              <option value="">Every benchmark</option>
+              {suites.map((x) => (
+                <option key={x.id} value={x.id}>
+                  {x.name} ({x.prompts} prompts)
+                </option>
+              ))}
+            </select>
+          )}
+          {(info.setups.length > 1 || setup) && (
+            <select
+              value={setup ?? ''}
+              onChange={(e) => setSetup(e.target.value || null)}
+              aria-label="Compare at these settings"
+            >
+              <option value="">Any settings</option>
+              {info.setups.map((x) => (
+                <option key={x.setup} value={x.setup}>
+                  {x.setup} ({plural(x.models, 'model')}, {plural(x.renders, 'render')})
+                </option>
+              ))}
+            </select>
+          )}
+          <label
+            className={styles.check}
+            title="Rank each model only on prompts every model in the table finished"
           >
-            <option value="">Every benchmark</option>
-            {suites.map((x) => (
-              <option key={x.id} value={x.id}>
-                {x.name} ({x.prompts} prompts)
-              </option>
-            ))}
-          </select>
-        )}
+            <input
+              type="checkbox"
+              checked={commonOnly}
+              onChange={(e) => setCommonOnly(e.target.checked)}
+            />
+            <span>
+              Common prompts only
+              {commonOnly && ` (${info.commonPrompts})`}
+            </span>
+          </label>
+        </div>
         <button onClick={() => downloadCsv('benchmark-leaderboard.csv', leaderboardCsv(sorted))}>
           <FileDown size={16} /> CSV
         </button>
       </div>
+      {mixed && (
+        <p className={styles.hint}>
+          Some models ran at more than one length, resolution or frame, so their averages mix
+          unlike renders. Pick one under Any settings to compare like for like.
+        </p>
+      )}
+      {commonOnly && info.commonPrompts === 0 && (
+        <p className={styles.hint}>
+          No prompt has a finished render from every model here yet, so nothing is ranked.
+        </p>
+      )}
       <div className="table-scroll">
         <table className={styles.board}>
           <thead>
@@ -1686,6 +1770,7 @@ function Leaderboard({
                   </button>
                   <small>
                     {PROVIDER_NAME[r.provider]} · {r.endpoint}
+                    {r.setups > 1 && ` · mixed settings (${r.setups})`}
                   </small>
                 </td>
                 {COLUMNS.map((c) => (
@@ -2041,10 +2126,16 @@ const leaderboardCsv = (rows: LeaderRow[]) =>
       provider: r.provider,
       model: r.name,
       endpoint: r.endpoint,
-      arena_elo: r.arena,
+      arena_rating: r.arena,
+      arena_low: r.arenaLow,
+      arena_high: r.arenaHigh,
       arena_votes: r.arenaVotes,
+      arena_prompts: r.arenaPrompts,
       avg_rating: r.avgRating,
+      rating_score: r.ratingScore,
       ratings: r.ratings,
+      prompts: r.prompts,
+      settings_groups: r.setups,
       picks: r.wins,
       runs: r.runs,
       done: r.done,
@@ -2053,6 +2144,7 @@ const leaderboardCsv = (rows: LeaderRow[]) =>
       median_generating_seconds: r.medianRunSeconds,
       median_queue_seconds: r.medianQueueSeconds,
       avg_cost_usd: r.avgCents === null ? null : r.avgCents / 100,
+      billed_renders: r.billed,
       cost_per_output_second_usd: r.centsPerSecond === null ? null : r.centsPerSecond / 100,
       median_motion: r.medianMotion,
       problem_rate_percent: r.issueRate,
@@ -2065,7 +2157,7 @@ const leaderboardCsv = (rows: LeaderRow[]) =>
 // beats on both axes: the best value at each price or speed.
 const QUALITY = [
   { id: 'judgeScore', label: 'AI judge', fmt: (v: number) => `${v}/10` },
-  { id: 'arena', label: 'Arena Elo', fmt: (v: number) => String(v) },
+  { id: 'arena', label: 'Arena', fmt: (v: number) => String(v) },
   { id: 'avgRating', label: 'Your rating', fmt: (v: number) => v.toFixed(1) },
 ] as const;
 const AGAINST = [

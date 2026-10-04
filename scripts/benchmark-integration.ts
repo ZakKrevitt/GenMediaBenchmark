@@ -87,7 +87,7 @@ try {
   pool = db.pool;
   const bench = await import('../src/services/benchmark');
   const renders = await import('../src/services/renders');
-  const { SPENT_TODAY } = await import('../src/lib/spend');
+  const { spentTodayCents } = await import('../src/lib/spend');
 
   const video = join(mediaDir, 'out.mp4');
   await execute(process.env.FFMPEG_BIN ?? 'ffmpeg', [
@@ -323,7 +323,7 @@ try {
   }
   pass('renders download, probe, and reconcile fal’s timing and billed cost');
 
-  const spent = ((await pool.query(SPENT_TODAY)).rows[0] as { cents: number }).cents;
+  const spent = await spentTodayCents();
   assert.equal(spent, 130, 'three billed renders at $0.4321 count as billed, the failed one not at all');
   pass('the daily limit counts billed cost once known');
 
@@ -356,7 +356,7 @@ try {
     assert.ok(s.queueSeconds !== null && s.runSeconds !== null, 'queue and generation split from the poller');
     assert.ok(s.reconciled);
   }
-  const spentAfter = ((await pool.query(SPENT_TODAY)).rows[0] as { cents: number }).cents;
+  const spentAfter = await spentTodayCents();
   assert.equal(spentAfter, 180, 'Higgsfield quotes count toward the same daily limit');
   pass('runs Higgsfield models, downloads and probes them, and splits queue from generation');
 
@@ -467,13 +467,13 @@ try {
   pass('benchmarks image-to-video: start image inline for fal, uploaded once for Higgsfield, frame follows the image');
 
   const judgeMod = await import('../src/services/benchmark-judge');
-  const spentBeforeJudge = ((await pool.query(SPENT_TODAY)).rows[0] as { cents: number }).cents;
+  const spentBeforeJudge = await spentTodayCents();
   const queuedJudge = await judgeMod.queueJudge(created.id);
   assert.equal(queuedJudge.queued, 3, 'the three finished renders; failed and running ones are skipped');
   assert.equal(queuedJudge.cents, 12);
   const again2 = await judgeMod.queueJudge(created.id);
   assert.equal(again2.queued, 0, 'queueing twice does not reserve twice');
-  const spentQueued = ((await pool.query(SPENT_TODAY)).rows[0] as { cents: number }).cents;
+  const spentQueued = await spentTodayCents();
   assert.equal(spentQueued - spentBeforeJudge, 12, 'judge reservations count toward the daily limit');
   const seen: { frames: number; prompt: string; startImage: boolean }[] = [];
   let calls = 0;
@@ -508,7 +508,21 @@ try {
   seen.length = 0;
   while ((await judgeMod.judgeBenchmarkShots(fakeJudge)) > 0);
   assert.ok(seen.length >= 1 && seen.every((s) => s.startImage), 'start image goes to the judge');
-  pass('AI judge: priced per render under the daily limit, blind frames to the model, clamped scores, failures refunded');
+  assert.equal(okJudge.judgeCents, 4, 'without token prices the flat reservation stays');
+  // With the model's token prices set, a scored render is charged what its tokens cost.
+  process.env.JUDGE_USD_PER_MTOK_IN = '2.5';
+  process.env.JUDGE_USD_PER_MTOK_OUT = '10';
+  await pool.query("UPDATE renders SET judge_state=NULL, judge=NULL, judge_cents=0 WHERE id=$1", [okJudge.id]);
+  await judgeMod.queueJudge(created.id);
+  calls = 0;
+  while ((await judgeMod.judgeBenchmarkShots(fakeJudge)) > 0);
+  const repriced = (await bench.benchmarkState()).benchmarks.find((b) => b.id === created.id)!.shots.find((x) => x.id === okJudge.id)!;
+  // 900 input and 80 output tokens: 0.00225 + 0.0008 dollars, rounded up to one cent.
+  assert.equal(repriced.judgeCents, 1);
+  assert.equal(judgeMod.judgeTokenCents({ input_tokens: 1_000_000, output_tokens: 100_000 }), 350);
+  delete process.env.JUDGE_USD_PER_MTOK_IN;
+  delete process.env.JUDGE_USD_PER_MTOK_OUT;
+  pass('AI judge: priced per render under the daily limit, blind frames to the model, clamped scores, failures refunded, token cost when priced');
 
   const beforeSuite = submitted.size;
   const suiteRun = await bench.createBenchmark(
@@ -528,7 +542,7 @@ try {
   assert.ok(members.some((b) => b.id === suiteRun.id));
   assert.deepEqual(members.map((b) => b.shots.map((s) => s.take).sort()), [[1, 2], [1, 2]]);
   assert.deepEqual(members.map((b) => b.prompt).sort(), [prompt, 'A crowd in a dark club raises phone lights in slow motion'].sort());
-  const scoped = await bench.benchmarkState(members[0].suiteId);
+  const scoped = await bench.benchmarkState({ suiteId: members[0].suiteId });
   assert.deepEqual(scoped.leaderboard.map((r) => r.endpoint), ['acme/clip/text-to-video'], 'the suite leaderboard only ranks its own renders');
   assert.equal(scoped.leaderboard[0].runs, 4);
   pass('suites run several prompts with several takes per model, and the leaderboard can rank one suite');
@@ -561,7 +575,45 @@ try {
   assert.ok(top.medianMotion! > 0.3);
   const broken = board.leaderboard.find((r) => r.endpoint === 'acme/broken/text-to-video')!;
   assert.equal(broken.failed, 2, 'the first attempt and the retry');
-  assert.ok(top.arenaLow !== null && top.arenaHigh !== null && top.arenaLow <= top.arena! && top.arena! <= top.arenaHigh);
+  // Every vote so far is on one prompt, so there is a rating but no interval yet.
+  assert.equal(top.arenaPrompts, 1);
+  assert.equal(top.arenaLow, null, 'one prompt cannot show how settled a rating is');
+  assert.ok(top.billed >= 1 && top.billed < top.done, `billed and estimated renders are counted apart: ${top.billed} of ${top.done}`);
+
+  // Effective settings: Veo ran at 4 s, the others at 5 s, so they are separate groups.
+  const info = board.leaderboardInfo;
+  const fiveSecond = info.setups.find((x) => x.setup === '5 s · 720p · 9:16');
+  assert.ok(fiveSecond && fiveSecond.models >= 2, `5 s group: ${JSON.stringify(info.setups)}`);
+  assert.ok(info.setups.some((x) => x.setup.startsWith('4 s')), 'Veo’s 4 s renders form their own group');
+  const matched = await bench.benchmarkState({ setup: '5 s · 720p · 9:16' });
+  assert.ok(matched.leaderboard.length > 0);
+  assert.ok(!matched.leaderboard.some((r) => r.endpoint === 'fal-ai/veo3.1/fast'), 'a 4 s model is not ranked among 5 s ones');
+  assert.ok(matched.leaderboard.every((r) => r.setups <= 1), 'one set of settings per model inside a group');
+
+  // Cost per second is total cost over total delivered seconds.
+  const clipRow = board.leaderboard.find((r) => r.endpoint === 'acme/clip/text-to-video')!;
+  const clipTotals = (
+    await pool.query(
+      `SELECT sum(coalesce(billed_cents, estimated_cents)) c, sum((output->>'seconds')::numeric) s
+       FROM renders WHERE endpoint='acme/clip/text-to-video' AND provider='fal' AND state='COMPLETE'`,
+    )
+  ).rows[0] as { c: string; s: string };
+  assert.equal(clipRow.centsPerSecond, Math.round((Number(clipTotals.c) / Number(clipTotals.s)) * 10) / 10);
+
+  // Common prompts: inside the suite every model finished both prompts. Across everything, only
+  // the first prompt was finished by every model, so each model is ranked on that one alone.
+  for (let i = 0; i < 4; i++) {
+    await renders.pollRenders(fake);
+    await pool.query('UPDATE renders SET polled_at=NULL');
+  }
+  const suiteCommon = await bench.benchmarkState({ suiteId: members[0].suiteId, commonOnly: true });
+  assert.equal(suiteCommon.leaderboardInfo.commonPrompts, 2);
+  assert.equal(suiteCommon.leaderboard[0].prompts, 2);
+  const allCommon = await bench.benchmarkState({ commonOnly: true });
+  assert.equal(allCommon.leaderboardInfo.commonPrompts, 1);
+  assert.equal((await bench.benchmarkState()).leaderboard.find((r) => r.endpoint === 'acme/clip/text-to-video')!.prompts, 2, 'the main prompt and the suite’s second prompt');
+  assert.ok(allCommon.leaderboard.some((r) => r.endpoint === 'acme/clip/text-to-video' && r.prompts === 1));
+  assert.ok(allCommon.leaderboard.every((r) => r.prompts <= 1), 'every model ranked on the shared prompt only');
 
   const history = await bench.modelHistory('fal:acme/broken/text-to-video');
   assert.equal(history.renders.length, 2);
@@ -572,7 +624,17 @@ try {
   assert.equal(req.prompt, clipHistory.renders.find((r) => r.request)!.prompt);
   assert.equal(req.duration, 5);
   await assert.rejects(bench.modelHistory('nope'), /Invalid|invalid/);
-  pass('ratings, notes, the pick and blind arena votes (as Elo) feed the leaderboard');
+  pass('ratings, picks and blind votes (Bradley-Terry) feed a leaderboard that groups by effective settings and common prompts');
+
+  // A failed render still counts toward the limit once the provider reports billing it.
+  const { startOfLocalDay } = await import('../src/lib/spend');
+  const midnight = new Date(startOfLocalDay());
+  assert.ok(midnight.getHours() === 0 && midnight.getMinutes() === 0 && midnight <= new Date(), 'the day starts at local midnight');
+  const beforeBilledFailure = await spentTodayCents();
+  await pool.query(`UPDATE renders SET billed_cents=10 WHERE id=$1`, [failed.id]);
+  assert.equal(await spentTodayCents(), beforeBilledFailure + 10);
+  await pool.query(`UPDATE renders SET billed_cents=NULL WHERE id=$1`, [failed.id]);
+  pass('the daily limit uses the local day and counts failed renders the provider billed anyway');
 
   // A model the benchmark has not seen before, listed more than a day after the first listing, is new.
   await pool.query("UPDATE benchmark_models_seen SET first_seen = now() - interval '3 days'");
