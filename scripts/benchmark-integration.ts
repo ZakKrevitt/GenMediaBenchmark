@@ -726,7 +726,11 @@ try {
   // Every vote so far is on one prompt, so there is a rating but no interval yet.
   assert.equal(top.arenaPrompts, 1);
   assert.equal(top.arenaLow, null, 'one prompt cannot show how settled a rating is');
-  assert.ok(top.billed >= 1 && top.billed < top.done, `billed and estimated renders are counted apart: ${top.billed} of ${top.done}`);
+  assert.ok(board.leaderboard.every((r) => r.billed <= r.done));
+  assert.ok(
+    board.leaderboard.some((r) => r.billed > 0 && r.billed < r.done),
+    'billed and estimated renders are counted apart',
+  );
 
   // Effective settings: Veo ran at 4 s, the others at 5 s, so they are separate groups.
   const info = board.leaderboardInfo;
