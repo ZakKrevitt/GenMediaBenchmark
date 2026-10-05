@@ -4,7 +4,7 @@ import { benchmarkModels } from '@/services/benchmark';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 
-// Every fal and Higgsfield text-to-video model, snapped to the run settings and priced, without spending.
+// Every fal, Higgsfield, OpenRouter and Replicate video model, snapped to the run settings and priced, without spending.
 export async function GET(request: Request) {
   try {
     await localOnly(request);

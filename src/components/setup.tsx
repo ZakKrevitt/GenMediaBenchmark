@@ -40,7 +40,7 @@ export function SetupGate({ children }: { children: React.ReactNode }) {
         <ProgressRing label="Loading" /> Checking setup
       </div>
     );
-  const firstRun = !status.fal && !status.higgsfield;
+  const firstRun = !status.fal && !status.higgsfield && !status.openrouter && !status.replicate;
   return (
     <>
       <div className={styles.keysBar}>
@@ -49,6 +49,12 @@ export function SetupGate({ children }: { children: React.ReactNode }) {
         </span>
         <span>
           <Dot on={status.higgsfield} /> Higgsfield
+        </span>
+        <span>
+          <Dot on={status.openrouter} /> OpenRouter
+        </span>
+        <span>
+          <Dot on={status.replicate} /> Replicate
         </span>
         <span>
           <Dot on={status.judge} /> AI judge
@@ -89,6 +95,8 @@ function Wizard({
 }) {
   const [fal, setFal] = useState('');
   const [hf, setHf] = useState('');
+  const [or, setOr] = useState('');
+  const [rep, setRep] = useState('');
   const [openai, setOpenai] = useState('');
   const [model, setModel] = useState(status.llmModel ?? '');
   const [limit, setLimit] = useState(String(status.dailyLimitUsd));
@@ -99,6 +107,8 @@ function Wizard({
   const nothing =
     !fal.trim() &&
     !hf.trim() &&
+    !or.trim() &&
+    !rep.trim() &&
     !openai.trim() &&
     model.trim() === (status.llmModel ?? '') &&
     Number(limit) === status.dailyLimitUsd;
@@ -114,6 +124,8 @@ function Wizard({
         body: JSON.stringify({
           falKey: fal.trim() || undefined,
           higgsfieldKey: hf.trim() || undefined,
+          openrouterKey: or.trim() || undefined,
+          replicateKey: rep.trim() || undefined,
           openaiKey: openai.trim() || undefined,
           llmModel: model.trim() && model.trim() !== status.llmModel ? model.trim() : undefined,
           dailyLimitUsd: Number(limit) !== status.dailyLimitUsd ? Number(limit) : undefined,
@@ -123,6 +135,8 @@ function Wizard({
         setWarnings(saved.warnings);
         setFal('');
         setHf('');
+        setOr('');
+        setRep('');
         setOpenai('');
       } else onSaved();
     } catch (e) {
@@ -138,9 +152,10 @@ function Wizard({
         <div>
           <h2 id="setup-title">{firstRun ? 'Set up the benchmark' : 'Keys and limit'}</h2>
           <p>
-            Add a key for fal, Higgsfield or both. Each key is checked with the provider (nothing is
-            billed) and saved to <code>.env.local</code> on this computer. It never leaves your
-            machine except to call that provider.
+            Add a key for any of fal, Higgsfield, OpenRouter and Replicate; one is enough to start.
+            Each key is checked with the provider (nothing is billed) and saved to{' '}
+            <code>.env.local</code> on this computer. It never leaves your machine except to call
+            that provider.
           </p>
         </div>
         {onClose && (
@@ -204,6 +219,38 @@ function Wizard({
               placeholder={status.higgsfield ? 'Paste a new key to replace it' : 'KEY_ID:KEY_SECRET'}
               value={hf}
               onChange={(e) => setHf(e.target.value)}
+            />
+          </label>
+          <label className={styles.field}>
+            <span>
+              OpenRouter key {status.openrouter && <em className={styles.saved}>Saved</em>}
+              <a href="https://openrouter.ai/settings/keys" target="_blank" rel="noreferrer">
+                Get a key <ExternalLink size={12} />
+              </a>
+            </span>
+            <input
+              type="password"
+              autoComplete="off"
+              spellCheck={false}
+              placeholder={status.openrouter ? 'Paste a new key to replace it' : 'sk-or-…'}
+              value={or}
+              onChange={(e) => setOr(e.target.value)}
+            />
+          </label>
+          <label className={styles.field}>
+            <span>
+              Replicate token {status.replicate && <em className={styles.saved}>Saved</em>}
+              <a href="https://replicate.com/account/api-tokens" target="_blank" rel="noreferrer">
+                Get a token <ExternalLink size={12} />
+              </a>
+            </span>
+            <input
+              type="password"
+              autoComplete="off"
+              spellCheck={false}
+              placeholder={status.replicate ? 'Paste a new token to replace it' : 'r8_…'}
+              value={rep}
+              onChange={(e) => setRep(e.target.value)}
             />
           </label>
         </li>

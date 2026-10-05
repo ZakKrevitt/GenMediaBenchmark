@@ -82,6 +82,70 @@ const HF_PAGES: Record<string, string> = {
     param('duration', 'integer', ' default="5"', 'Minimum: `1`.\n  Maximum: `15`.'),
 };
 
+// OpenRouter and Replicate fakes, in the shapes their APIs and pages publish (5 October 2026).
+const OR_MODELS = [
+  {
+    id: 'google/veo-3.1-fast',
+    name: 'Google: Veo 3.1 Fast',
+    supported_resolutions: ['720p', '1080p'],
+    supported_aspect_ratios: ['16:9', '9:16'],
+    supported_durations: [4, 6, 8],
+    supported_frame_images: ['first_frame'],
+    generate_audio: true,
+    seed: true,
+    pricing_skus: { duration_seconds_with_audio_720p: '0.10', duration_seconds_without_audio_720p: '0.08' },
+  },
+  {
+    id: 'alibaba/wan-3.0',
+    name: 'Alibaba: Wan 3.0',
+    supported_resolutions: ['480p', '720p', '1080p'],
+    supported_aspect_ratios: ['16:9', '9:16'],
+    supported_durations: [2, 3, 4, 5, 6, 8, 10],
+    supported_frame_images: ['first_frame'],
+    generate_audio: true,
+    seed: true,
+    pricing_skus: { duration_seconds_480p: '0.05', duration_seconds_720p: '0.1' },
+  },
+  { id: 'black-forest-labs/flux-video-edit', name: 'Black Forest Labs: FLUX Video Edit', supported_durations: null, pricing_skus: { cents_per_second_output: '3' } },
+];
+const repSchema = (props: Record<string, unknown>) => ({
+  components: { schemas: { Input: { properties: { prompt: { type: 'string' }, ...props }, required: ['prompt'] } } },
+});
+const REP_MODELS = [
+  {
+    owner: 'kwaivgi',
+    name: 'kling-v3-video',
+    latest_version: {
+      id: 'kling-version-1',
+      openapi_schema: repSchema({
+        duration: { type: 'integer', minimum: 3, maximum: 15, default: 5 },
+        aspect_ratio: { type: 'string', enum: ['16:9', '9:16', '1:1'], default: '16:9' },
+        generate_audio: { type: 'boolean', default: false },
+      }),
+    },
+  },
+  {
+    owner: 'acme',
+    name: 'gpu-video',
+    latest_version: { id: 'gpu-version-7', openapi_schema: repSchema({ num_frames: { type: 'integer', default: 121 } }) },
+  },
+];
+const billing = (config: unknown, price: string, p50: string) =>
+  `<html><script>{"billingConfig": ${JSON.stringify(config)}, "price": "${price}", "p50price": "${p50}"}</script></html>`;
+const REP_PAGES: Record<string, string> = {
+  'kwaivgi/kling-v3-video': billing(
+    {
+      current_tiers: [
+        { criteria: [{ title: 'with audio', type: 'equals', value: false }], prices: [{ metric: 'video_output_duration_seconds', price: '$0.168' }] },
+        { criteria: [{ title: 'with audio', type: 'equals', value: true }], prices: [{ metric: 'video_output_duration_seconds', price: '$0.252' }] },
+      ],
+    },
+    '$0.168',
+    '$0.013',
+  ),
+  'acme/gpu-video': '<html><script>{"price": "$0.000975 per second", "p50price": "$0.059"}</script></html>',
+};
+
 try {
   const db = await import('../src/lib/db');
   pool = db.pool;
@@ -105,6 +169,17 @@ try {
   let billingForbidden = false;
   const uploads: string[] = [];
   const hfSubmitted = new Map<string, { endpoint: string; input: Record<string, unknown>; idempotency: string }>();
+  const orSubmitted = new Map<string, Record<string, unknown>>();
+  const repCreated: { target: string; input: Record<string, unknown> }[] = [];
+  const repCreate = (target: string, input: Record<string, unknown>) => {
+    const id = `rp-${String(++seq).padStart(8, '0')}`;
+    repCreated.push({ target, input });
+    return json({
+      id,
+      status: 'starting',
+      urls: { get: `https://api.replicate.com/v1/predictions/${id}`, cancel: `https://api.replicate.com/v1/predictions/${id}/cancel` },
+    });
+  };
   const fake: typeof fetch = async (raw, init) => {
     const url = new URL(String(raw));
     const method = init?.method ?? 'GET';
@@ -214,6 +289,79 @@ try {
       const id = url.searchParams.get('request_id')!;
       return json({ billing_events: [{ request_id: id, cost_total: 0.4321 }], has_more: false, next_cursor: null });
     }
+    // OpenRouter: public model list, async jobs, bill on completion, downloads need the key.
+    if (url.hostname === 'openrouter.ai') {
+      const path = url.pathname;
+      const auth = new Headers(init?.headers).get('Authorization');
+      if (path === '/api/v1/videos/models') return json({ data: OR_MODELS });
+      if (path === '/api/v1/videos' && method === 'POST') {
+        const id = `or-${String(++seq).padStart(8, '0')}`;
+        orSubmitted.set(id, JSON.parse(String(init?.body)));
+        return json({ id, polling_url: `https://openrouter.ai/api/v1/videos/${id}`, status: 'pending' });
+      }
+      const m = path.match(/^\/api\/v1\/videos\/(or-\d+)(\/content)?$/);
+      if (m && m[2]) return auth === 'Bearer or-test-key' ? new Response(mp4) : json({ error: 'unauthorized' }, 401);
+      if (m) {
+        const n = (statusChecks.get(m[1]) ?? 0) + 1;
+        statusChecks.set(m[1], n);
+        if (n === 1) return json({ id: m[1], status: 'pending' });
+        if (n === 2) return json({ id: m[1], status: 'in_progress' });
+        return json({
+          id: m[1],
+          status: 'completed',
+          unsigned_urls: [`https://openrouter.ai/api/v1/videos/${m[1]}/content?index=0`],
+          usage: { cost: 0.5432, is_byok: false },
+        });
+      }
+    }
+    // Replicate: collections and predictions need the key; prices come from public model pages.
+    if (url.hostname === 'replicate.com') {
+      const page = REP_PAGES[url.pathname.slice(1)];
+      return page ? new Response(page) : new Response('missing', { status: 404 });
+    }
+    if (url.hostname === 'api.replicate.com') {
+      const path = url.pathname;
+      if (path === '/v1/collections/text-to-video') return json({ models: REP_MODELS });
+      if (path === '/v1/collections/image-to-video') return json({ models: [] });
+      const official = path.match(/^\/v1\/models\/([\w-]+)\/([\w.-]+)\/predictions$/);
+      if (official && method === 'POST') {
+        // Community models only run by version.
+        if (official[1] === 'acme') return json({ detail: 'version required' }, 404);
+        return repCreate(`${official[1]}/${official[2]}`, JSON.parse(String(init?.body)).input);
+      }
+      if (path === '/v1/predictions' && method === 'POST') {
+        const body = JSON.parse(String(init?.body));
+        return repCreate(`version:${body.version}`, body.input);
+      }
+      const cancel = path.match(/^\/v1\/predictions\/(rp-\d+)\/cancel$/);
+      if (cancel && method === 'POST') {
+        canceled.push(cancel[1]);
+        return json({ id: cancel[1], status: 'canceled' });
+      }
+      const get = path.match(/^\/v1\/predictions\/(rp-\d+)$/);
+      if (get) {
+        const n = (statusChecks.get(get[1]) ?? 0) + 1;
+        statusChecks.set(get[1], n);
+        const base = {
+          id: get[1],
+          urls: { get: `https://api.replicate.com/v1/predictions/${get[1]}`, cancel: `https://api.replicate.com/v1/predictions/${get[1]}/cancel` },
+          created_at: '2026-10-05T10:00:00Z',
+          error: null,
+          output: null,
+        };
+        if (n === 1) return json({ ...base, status: 'starting' });
+        if (n === 2) return json({ ...base, status: 'processing', started_at: '2026-10-05T10:00:07.5Z' });
+        return json({
+          ...base,
+          status: 'succeeded',
+          started_at: '2026-10-05T10:00:07.5Z',
+          completed_at: '2026-10-05T10:00:47.5Z',
+          metrics: { predict_time: 40 },
+          output: `https://replicate.delivery/xezq/${get[1]}/out.mp4`,
+        });
+      }
+    }
+    if (url.hostname === 'replicate.delivery') return new Response(mp4, { headers: { 'Content-Type': 'video/mp4' } });
     throw new Error(`Unexpected fetch ${method} ${url}`);
   };
   globalThis.fetch = fake;
@@ -662,6 +810,87 @@ try {
   assert.equal(unbilled.runSeconds, 61.5);
   assert.ok(unbilled.reconciled, 'reconciled on timing alone when billing is refused');
   pass('a fal key without billing access keeps the estimate and stops asking');
+  // OpenRouter and Replicate, through the same listing, launch, poller and leaderboard.
+  process.env.DAILY_LIMIT_USD = '50';
+  process.env.OPENROUTER_API_KEY = 'or-test-key';
+  process.env.REPLICATE_API_TOKEN = 'r8_test_token';
+  const wide = await bench.benchmarkModels(settings, fake);
+  assert.deepEqual(wide.connected, { fal: true, higgsfield: true, openrouter: true, replicate: true });
+  const wideBy = (id: string) => wide.models.find((m) => m.id === id)!;
+  const orVeo = wideBy('openrouter:google/veo-3.1-fast');
+  assert.deepEqual(orVeo.used, { duration: 6, aspectRatio: '9:16', resolution: '720p', audio: true });
+  assert.equal(orVeo.cents, 60, '$0.10 a second at 720p with sound, 6 s');
+  assert.equal(orVeo.name, 'Veo 3.1 Fast');
+  assert.equal(orVeo.maker, 'Google');
+  assert.equal(wideBy('openrouter:alibaba/wan-3.0').cents, 50);
+  assert.match(wideBy('openrouter:black-forest-labs/flux-video-edit').blocker!, /existing video/);
+  assert.equal(wideBy('replicate:kwaivgi/kling-v3-video').cents, 126, '$0.252 a second with sound, 5 s');
+  const gpuModel = wideBy('replicate:acme/gpu-video');
+  assert.equal(gpuModel.cents, 6, 'GPU-billed: Replicate’s typical run');
+  assert.match(gpuModel.priceNote, /GPU time/);
+  const exactWide = (await bench.benchmarkModels({ ...settings, exactDuration: true }, fake)).models;
+  assert.equal(
+    exactWide.find((m) => m.id === 'openrouter:google/veo-3.1-fast')!.blocker,
+    'Can’t make exactly 5 s (nearest is 6 s)',
+  );
+  assert.equal(exactWide.find((m) => m.id === 'openrouter:alibaba/wan-3.0')!.blocker, null);
+
+  const wideRun = await bench.createBenchmark(
+    {
+      key: 'bench-key-or-replicate-01',
+      prompt,
+      settings,
+      models: ['openrouter:google/veo-3.1-fast', 'replicate:kwaivgi/kling-v3-video', 'replicate:acme/gpu-video'],
+    },
+    fake,
+  );
+  const orBody = [...orSubmitted.values()].at(-1)!;
+  assert.deepEqual(orBody, {
+    model: 'google/veo-3.1-fast',
+    prompt,
+    duration: 6,
+    resolution: '720p',
+    aspect_ratio: '9:16',
+    generate_audio: true,
+  });
+  assert.deepEqual(repCreated.map((c) => c.target).sort(), ['kwaivgi/kling-v3-video', 'version:gpu-version-7']);
+  assert.equal(repCreated.find((c) => c.target === 'kwaivgi/kling-v3-video')!.input.generate_audio, true);
+  for (let i = 0; i < 4; i++) {
+    await renders.pollRenders(fake);
+    await pool.query('UPDATE renders SET polled_at=NULL');
+  }
+  await bench.reconcileBenchmarkShots(fake);
+  const wideShots = (await bench.benchmarkState()).benchmarks.find((b) => b.id === wideRun.id)!.shots;
+  const orShot = wideShots.find((x) => x.provider === 'openrouter')!;
+  assert.equal(orShot.state, 'COMPLETE', `OpenRouter render: ${orShot.error}`);
+  assert.equal(orShot.output?.width, 360, 'downloaded with the key and probed');
+  assert.equal(orShot.billedCents, 54.32, 'OpenRouter’s reported cost replaces the estimate');
+  assert.ok(orShot.queueSeconds !== null && orShot.runSeconds !== null && orShot.reconciled);
+  const klingShot = wideShots.find((x) => x.endpoint === 'kwaivgi/kling-v3-video')!;
+  assert.equal(klingShot.state, 'COMPLETE', `Replicate render: ${klingShot.error}`);
+  assert.equal(klingShot.queueSeconds, 7.5, 'Replicate’s own queue time');
+  assert.equal(klingShot.runSeconds, 40, 'Replicate’s own predict time');
+  assert.equal(klingShot.timing, 'provider');
+  assert.equal(klingShot.estimatedCents, 126);
+  assert.equal(klingShot.billedCents, null, 'Replicate reports no bill, so its cost stays an estimate');
+  const gpuShot = wideShots.find((x) => x.endpoint === 'acme/gpu-video')!;
+  assert.equal(gpuShot.estimatedCents, 4, '40 s of GPU at $0.000975 a second');
+  const wideBoard = (await bench.benchmarkState()).leaderboard;
+  assert.ok(wideBoard.some((r) => r.provider === 'openrouter' && r.billed === 1));
+  assert.ok(wideBoard.some((r) => r.provider === 'replicate' && r.endpoint === 'kwaivgi/kling-v3-video' && r.medianRunSeconds === 40));
+
+  const queuedWide = await bench.createBenchmark(
+    { key: 'bench-key-or-replicate-02', prompt, settings, models: ['openrouter:alibaba/wan-3.0', 'replicate:kwaivgi/kling-v3-video'] },
+    fake,
+  );
+  const canceledBefore = canceled.length;
+  const wideCancel = await bench.cancelQueued(queuedWide.id, fake);
+  assert.deepEqual(wideCancel, { canceled: 1, generating: 0, refused: 1 }, 'Replicate cancels; OpenRouter has no cancel');
+  assert.equal(canceled.length, canceledBefore + 1);
+  delete process.env.OPENROUTER_API_KEY;
+  delete process.env.REPLICATE_API_TOKEN;
+  pass('OpenRouter and Replicate: listed, priced, run, downloaded, billed or timed by the provider, and cancelled where possible');
+
 
   console.log(`\n${checks} benchmark checks passed`);
 } finally {

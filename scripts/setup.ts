@@ -48,11 +48,14 @@ async function check() {
   const s = await environment();
   console.log(bold('\nKeys in .env.local'));
   let working = 0;
+  const names = { fal: 'fal', higgsfield: 'Higgsfield', openrouter: 'OpenRouter', replicate: 'Replicate' } as const;
   for (const [provider, set, value] of [
     ['fal', s.fal, process.env.FAL_KEY],
     ['higgsfield', s.higgsfield, process.env.HIGGSFIELD_KEY || process.env.HF_CREDENTIALS || process.env.HF_KEY],
+    ['openrouter', s.openrouter, process.env.OPENROUTER_API_KEY],
+    ['replicate', s.replicate, process.env.REPLICATE_API_TOKEN || process.env.REPLICATE_API_KEY],
   ] as const) {
-    const name = provider === 'fal' ? 'fal' : 'Higgsfield';
+    const name = names[provider];
     if (!set || !value) {
       no(`${name}: not set`);
       continue;
@@ -94,7 +97,13 @@ async function wizard() {
   console.log('Keys are checked with each provider (nothing is billed) and saved to .env.local, which git ignores.');
   const s = await environment();
 
-  const provider = async (id: 'fal' | 'higgsfield', name: string, url: string, envName: 'FAL_KEY' | 'HIGGSFIELD_KEY', saved: boolean) => {
+  const provider = async (
+    id: 'fal' | 'higgsfield' | 'openrouter' | 'replicate',
+    name: string,
+    url: string,
+    envName: 'FAL_KEY' | 'HIGGSFIELD_KEY' | 'OPENROUTER_API_KEY' | 'REPLICATE_API_TOKEN',
+    saved: boolean,
+  ) => {
     console.log(bold(`\n${name}`) + ` (get a key at ${url})`);
     for (;;) {
       const key = await ask(saved ? '  Paste a new key, or press Enter to keep the saved one: ' : '  Paste your key, or press Enter to skip: ', true);
@@ -111,6 +120,8 @@ async function wizard() {
   };
   await provider('fal', 'fal', 'https://fal.ai/dashboard/keys', 'FAL_KEY', s.fal);
   await provider('higgsfield', 'Higgsfield', 'https://cloud.higgsfield.ai/api-keys, pasted as KEY_ID:KEY_SECRET', 'HIGGSFIELD_KEY', s.higgsfield);
+  await provider('openrouter', 'OpenRouter', 'https://openrouter.ai/settings/keys', 'OPENROUTER_API_KEY', s.openrouter);
+  await provider('replicate', 'Replicate', 'https://replicate.com/account/api-tokens', 'REPLICATE_API_TOKEN', s.replicate);
 
   console.log(bold('\nAI judge') + ' (optional: an OpenAI model that accepts images scores finished renders)');
   const openai = await ask(s.judge ? '  Paste a new OpenAI key, or press Enter to keep the saved one: ' : '  Paste an OpenAI key, or press Enter to skip: ', true);
@@ -143,7 +154,7 @@ async function wizard() {
   }
 
   const after = await setupStatus();
-  if (!after.fal && !after.higgsfield) {
+  if (!after.fal && !after.higgsfield && !after.openrouter && !after.replicate) {
     console.log('\nNo provider key saved yet. You can add one later with `npm run setup` or in the app.');
     process.exit(1);
   }

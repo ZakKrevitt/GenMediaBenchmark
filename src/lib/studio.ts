@@ -11,6 +11,9 @@ export const RESOLUTIONS = ['480p', '720p', '1080p'] as const;
 export const REFERENCE_KINDS = ['character', 'location', 'prop', 'style'] as const;
 export const PROVIDERS = ['fal', 'higgsfield'] as const;
 export type Provider = (typeof PROVIDERS)[number];
+/** Providers the benchmark can also compare, beyond the ones the studio renders with. */
+export const BENCH_PROVIDERS = [...PROVIDERS, 'openrouter', 'replicate'] as const;
+export type BenchProvider = (typeof BENCH_PROVIDERS)[number];
 export const MAX_REFERENCES = 6;
 
 export type Move = (typeof MOVES)[number];

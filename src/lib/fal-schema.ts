@@ -96,6 +96,7 @@ const IMAGE_KEYS = [
   'start_image_url',
   'first_frame_url',
   'first_frame_image',
+  'start_image',
   'image',
   'input_image_url',
   'reference_image_url',

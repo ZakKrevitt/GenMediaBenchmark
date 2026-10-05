@@ -7,8 +7,8 @@ import {
   ASPECTS,
   RESOLUTIONS,
   directionSchema,
+  type BenchProvider,
   type Direction,
-  type Provider,
 } from '../lib/studio';
 import { MODELS, fitToModel, modeFor, type GenModel } from '../lib/production-models';
 import {
@@ -23,7 +23,7 @@ import {
 } from '../lib/fal-schema';
 import { studioProviders } from '../providers/studio-providers';
 import { estimateHiggsfield, submitHiggsfield, uploadHiggsfield } from '../providers/higgsfield';
-import { falKey, higgsfieldKey } from '../lib/fal-key';
+import { falKey, higgsfieldKey, openrouterKey, replicateKey } from '../lib/fal-key';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -39,8 +39,23 @@ import {
   type VideoAnalysis,
 } from '../media/video-analysis';
 import { higgsfieldCatalog } from './model-catalog';
+import {
+  buildOpenRouterInput,
+  openRouterBlocker,
+  openRouterVideoModels,
+  priceOpenRouter,
+  type OpenRouterModel,
+} from '../providers/openrouter';
+import {
+  REPLICATE_CATEGORIES,
+  priceReplicate,
+  replicateCollection,
+  replicateInputSpec,
+  replicatePricing,
+  type ReplicateModel,
+} from '../providers/replicate';
 
-// Benchmarks render one prompt on many fal and Higgsfield video models. Curated models use their
+// Benchmarks render one prompt on many fal, Higgsfield, OpenRouter and Replicate video models. Curated models use their
 // tuned request builders; every other text-to-video endpoint is driven from its published
 // parameters (fal's OpenAPI schema, Higgsfield's docs page). fal is priced from its pricing API,
 // Higgsfield from its free per-request quote. Every render is recorded before submission and
@@ -66,7 +81,7 @@ export type BenchRunSettings = z.infer<typeof benchSettingsSchema>;
 export type BenchModel = {
   /** provider:endpoint, since the same endpoint can exist on both providers. */
   id: string;
-  provider: Provider;
+  provider: BenchProvider;
   endpoint: string;
   name: string;
   maker: string | null;
@@ -290,7 +305,7 @@ async function inBatches<T, R>(
 }
 
 const studioEndpoint = (m: GenModel, mode: Mode) => m.endpoints[mode];
-const studioModels = (provider: Provider, mode: Mode) =>
+const studioModels = (provider: BenchProvider, mode: Mode) =>
   MODELS.filter((m) => m.provider === provider && studioEndpoint(m, mode));
 // Listing builds requests without sending them; only Higgsfield quotes need a real image URL.
 const PLACEHOLDER_IMAGE = 'https://placeholder.invalid/start-frame.jpg';
@@ -298,15 +313,17 @@ const PLACEHOLDER_IMAGE = 'https://placeholder.invalid/start-frame.jpg';
 // The start image as each provider takes it: inline for fal, an upload slot for Higgsfield (made
 // once per image and reused for quotes and renders).
 const hfFrames = new Map<string, Promise<string>>();
-async function startImage(provider: Provider, frameId: string, hfKey?: string) {
+async function startImage(provider: BenchProvider, frameId: string, hfKey?: string) {
   const ref = await one<{ image_key: string; content_type: string }>(
     'SELECT image_key,content_type FROM start_images WHERE id=$1',
     [frameId],
   ).catch(() => {
     throw new GateError('INVALID_INPUT', 'The start image was removed. Add it again.');
   });
-  if (provider === 'fal')
+  if (provider === 'fal' || provider === 'openrouter')
     return `data:${ref.content_type};base64,${(await getAsset(ref.image_key)).toString('base64')}`;
+  // Replicate takes inline images up to 256 KB, so the frame is shrunk to fit.
+  if (provider === 'replicate') return smallJpeg(frameId, ref.image_key);
   const cachedUrl = hfFrames.get(frameId);
   if (cachedUrl) return cachedUrl;
   const upload = getAsset(ref.image_key).then((data) =>
@@ -316,6 +333,30 @@ async function startImage(provider: Provider, frameId: string, hfKey?: string) {
   upload.catch(() => hfFrames.delete(frameId));
   setTimeout(() => hfFrames.delete(frameId), 3600_000).unref?.();
   return upload;
+}
+const smallFrames = new Map<string, Promise<string>>();
+function smallJpeg(frameId: string, imageKey: string) {
+  const hit = smallFrames.get(frameId);
+  if (hit) return hit;
+  const made = (async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'bench-frame-'));
+    try {
+      for (const [width, quality] of [[1280, 4], [1024, 6], [768, 9]] as const) {
+        const out = join(dir, `frame-${width}.jpg`);
+        await withAssetPath(imageKey, (path) =>
+          runMedia('ffmpeg', ['-y', '-v', 'error', '-i', path, '-vf', `scale='min(${width},iw)':-2`, '-q:v', String(quality), out]),
+        );
+        const data = await readFile(out);
+        if (data.length <= 250 * 1024 || width === 768) return `data:image/jpeg;base64,${data.toString('base64')}`;
+      }
+      throw new GateError('INVALID_INPUT', 'The start image could not be made small enough for Replicate');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  })();
+  smallFrames.set(frameId, made);
+  made.catch(() => smallFrames.delete(frameId));
+  return made;
 }
 // Inline images stay out of the stored request record.
 const withoutInlineImages = (input: Record<string, unknown>) =>
@@ -351,7 +392,7 @@ const studioUsed = (m: GenModel, d: Direction): UsedSettings => ({
 });
 
 const money = (cents: number) => `$${(cents / 100).toFixed(2)}`;
-const modelKey = (provider: Provider, endpoint: string) => `${provider}:${endpoint}`;
+const modelKey = (provider: BenchProvider, endpoint: string) => `${provider}:${endpoint}`;
 
 /** Higgsfield's request parameters for one endpoint, read from its docs page. */
 export function higgsfieldInputSpec(
@@ -429,12 +470,13 @@ type Built = {
 // The request one model gets for a prompt: the studio builder when the studio knows the model,
 // otherwise its published parameters with every setting snapped to what it accepts.
 function buildFor(
-  provider: Provider,
+  provider: BenchProvider,
   endpoint: string,
   spec: InputSpec | null,
   prompt: string,
   s: BenchRunSettings,
   image?: string,
+  openrouter?: OpenRouterModel,
 ): Built {
   const mode = modeOf(s);
   const studio = studioModels(provider, mode).find((m) => studioEndpoint(m, mode) === endpoint);
@@ -452,23 +494,25 @@ function buildFor(
       model: studio.id,
     };
   }
-  const built = buildGenericInput(
-    spec!,
-    { prompt: prompt || QUOTE_PROMPT, ...s },
-    mode === 'image' ? image : undefined,
-  );
-  const direction = directionSchema.parse({
-    move: 'free',
-    promptOverride: prompt || QUOTE_PROMPT,
-    duration: Math.min(20, Math.max(2, Math.round(built.used.duration ?? s.duration))),
-    aspectRatio: s.aspectRatio,
-    resolution: s.resolution,
-    audio: built.used.audio ?? false,
-    seed: s.seed,
+  const built = openrouter
+    ? buildOpenRouterInput(openrouter, prompt || QUOTE_PROMPT, s, mode === 'image' ? image : undefined)
+    : buildGenericInput(spec!, { prompt: prompt || QUOTE_PROMPT, ...s }, mode === 'image' ? image : undefined);
+  // The shot direction is stored as a record of what was asked; catalogue models have no studio
+  // provider of their own there, so the benchmark provider is set after validation.
+  const direction = {
+    ...directionSchema.parse({
+      move: 'free',
+      promptOverride: prompt || QUOTE_PROMPT,
+      duration: Math.min(20, Math.max(2, Math.round(built.used.duration ?? s.duration))),
+      aspectRatio: s.aspectRatio,
+      resolution: s.resolution,
+      audio: built.used.audio ?? false,
+      seed: s.seed,
+      model: `${provider}-catalog`,
+      firstFrameId: s.firstFrameId,
+    }),
     provider,
-    model: `${provider}-catalog`,
-    firstFrameId: s.firstFrameId,
-  });
+  } as unknown as Direction;
   return { input: built.input, used: built.used, direction, model: endpoint };
 }
 
@@ -678,6 +722,89 @@ async function higgsfieldModels(
   });
 }
 
+// The last good list per provider and mode, served when a provider's list briefly fails.
+const lastLists = new Map<string, unknown>();
+async function lastGood<T>(key: string, load: () => Promise<T>) {
+  try {
+    const value = await cached(key, 30 * 60_000, load);
+    lastLists.set(key, value);
+    return { value, stale: false };
+  } catch (error) {
+    if (lastLists.has(key)) return { value: lastLists.get(key) as T, stale: true };
+    throw error;
+  }
+}
+
+/** OpenRouter's video models, snapped and priced from the capabilities and SKUs it publishes. */
+async function openRouterModels(s: BenchRunSettings, fetcher: typeof fetch, notes: string[]): Promise<BenchModel[]> {
+  const mode = modeOf(s);
+  const list = await lastGood('bench:openrouter:models', () => openRouterVideoModels(fetcher))
+    .then((r) => {
+      if (r.stale) notes.push('OpenRouter’s model list could not be refreshed, so this is the last list it returned.');
+      return r.value;
+    })
+    .catch(() => {
+      notes.push('OpenRouter’s model list did not load. Try again in a minute.');
+      return [] as OpenRouterModel[];
+    });
+  return list.map((m): BenchModel => {
+    const blocker = openRouterBlocker(m, mode);
+    const built = blocker ? null : buildFor('openrouter', m.id, null, '', s, PLACEHOLDER_IMAGE, m);
+    const price = built ? priceOpenRouter(m, built.used, mode, s.aspectRatio) : null;
+    const [maker, ...rest] = m.name.split(': ');
+    return {
+      id: modelKey('openrouter', m.id),
+      provider: 'openrouter',
+      endpoint: m.id,
+      // "Kling: Video v3.0 Pro" keeps its brand; "Google: Veo 3.1" reads as "Veo 3.1".
+      name: rest.length ? (/^video\b/i.test(rest.join(': ')) ? `${maker} ${rest.join(': ')}` : rest.join(': ')) : m.name,
+      maker: rest.length ? maker : (m.id.split('/')[0] ?? null),
+      studioModel: null,
+      thumbnail: null,
+      blocker,
+      used: built?.used ?? emptyUsed,
+      cents: price?.cents ?? null,
+      priceNote: price?.note ?? '',
+    };
+  });
+}
+
+export async function replicateModelsFor(key: string, mode: Mode, fetcher: typeof fetch) {
+  return (await lastGood(`bench:replicate:${mode}`, () => replicateCollection(key, REPLICATE_CATEGORIES[mode], fetcher))).value;
+}
+
+/** Replicate's video models (its API needs a key even to list), priced from each model's page. */
+async function replicateModels(s: BenchRunSettings, fetcher: typeof fetch, notes: string[]): Promise<BenchModel[]> {
+  const mode = modeOf(s);
+  const key = await replicateKey();
+  if (!key) return [];
+  const list = await replicateModelsFor(key, mode, fetcher).catch(() => {
+    notes.push('Replicate’s model list did not load. Check the key, or try again in a minute.');
+    return [] as ReplicateModel[];
+  });
+  return inBatches(list, 8, async (m): Promise<BenchModel> => {
+    const spec = replicateInputSpec(m);
+    const blocker = spec.blocker && !Object.keys(spec.props).length ? spec.blocker : blockerFor(spec, mode);
+    const built = blocker ? null : buildFor('replicate', m.slug, spec, '', s, PLACEHOLDER_IMAGE);
+    const price = built
+      ? priceReplicate(await replicatePricing(m.slug, fetcher).catch(() => ({ tiers: [], hardwarePerSecond: null, typicalUsd: null })), built.used, built.input, spec)
+      : null;
+    return {
+      id: modelKey('replicate', m.slug),
+      provider: 'replicate',
+      endpoint: m.slug,
+      name: m.name,
+      maker: m.owner,
+      studioModel: null,
+      thumbnail: m.cover_image_url?.startsWith('https://') && /\.(jpe?g|png|webp)$/i.test(m.cover_image_url) ? m.cover_image_url : null,
+      blocker,
+      used: built?.used ?? emptyUsed,
+      cents: price?.cents ?? null,
+      priceNote: price ? `${price.note}${price.cents === null ? `; holds ${money(UNPRICED_HOLD_CENTS)} of the daily limit` : ''}` : '',
+    };
+  });
+}
+
 const blockedLast = (list: BenchModel[]) =>
   [...list].sort(
     (a, b) =>
@@ -685,31 +812,40 @@ const blockedLast = (list: BenchModel[]) =>
       Number(!a.studioModel) - Number(!b.studioModel),
   );
 
-/** Every fal and Higgsfield text-to-video model a benchmark can run, priced and snapped to these settings. */
+const has = (key: () => Promise<string | undefined>) => key().then(Boolean).catch(() => false);
+
+/** Every fal, Higgsfield, OpenRouter and Replicate video model a benchmark can run, priced and snapped to these settings. */
 export async function benchmarkModels(raw: unknown, fetcher: typeof fetch = fetch) {
   const s = benchSettingsSchema.parse(raw ?? {});
   const notes: string[] = [];
-  const [fal, hf, falConnected, higgsfieldConnected] = await Promise.all([
-    falModels(s, fetcher, notes),
-    higgsfieldModels(s, fetcher, notes),
-    falKey()
-      .then(Boolean)
-      .catch(() => false),
-    higgsfieldKey()
-      .then(Boolean)
-      .catch(() => false),
-  ]);
+  const [fal, hf, or, rep, falConnected, higgsfieldConnected, openrouterConnected, replicateConnected] =
+    await Promise.all([
+      falModels(s, fetcher, notes),
+      higgsfieldModels(s, fetcher, notes),
+      openRouterModels(s, fetcher, notes),
+      replicateModels(s, fetcher, notes),
+      has(falKey),
+      has(higgsfieldKey),
+      has(openrouterKey),
+      has(replicateKey),
+    ]);
   if (s.exactDuration)
-    for (const m of [...fal, ...hf]) {
+    for (const m of [...fal, ...hf, ...or, ...rep]) {
       const blocker = durationBlocker(m, s.duration);
       if (blocker !== m.blocker) Object.assign(m, { blocker, lengthMismatch: true });
     }
-  const models = [...blockedLast(fal), ...blockedLast(hf)];
+  const models = [...blockedLast(fal), ...blockedLast(hf), ...blockedLast(or), ...blockedLast(rep)];
   const seen = await markSeen(models).catch(
     () => new Map<string, { firstSeen: string; isNew: boolean }>(),
   );
   for (const m of models) Object.assign(m, seen.get(m.id) ?? { isNew: false, firstSeen: null });
-  return { models, falConnected, higgsfieldConnected, notes };
+  const connected: Record<BenchProvider, boolean> = {
+    fal: falConnected,
+    higgsfield: higgsfieldConnected,
+    openrouter: openrouterConnected,
+    replicate: replicateConnected,
+  };
+  return { models, falConnected, higgsfieldConnected, connected, notes };
 }
 // With exact duration on, a model that would snap to another length (or picks its own) cannot run,
 // so every render in the benchmark is the same length and their costs compare directly.
@@ -723,7 +859,7 @@ function durationBlocker(m: BenchModel, duration: number) {
 // provider's first listing is the baseline; later arrivals are new for two weeks.
 async function markSeen(models: BenchModel[]) {
   const out = new Map<string, { firstSeen: string; isNew: boolean }>();
-  for (const provider of ['fal', 'higgsfield'] as const) {
+  for (const provider of ['fal', 'higgsfield', 'openrouter', 'replicate'] as const) {
     const list = models.filter((m) => m.provider === provider);
     if (!list.length) continue;
     await pool.query(
@@ -750,7 +886,7 @@ const emptyUsed: UsedSettings = {
   audio: null,
 };
 
-const modelId = z.string().regex(/^(fal|higgsfield):[a-z0-9][a-z0-9._/-]{2,159}$/i);
+const modelId = z.string().regex(/^(fal|higgsfield|openrouter|replicate):[a-z0-9][a-z0-9._/-]{2,159}$/i);
 const createSchema = z
   .object({
     key: z.string().regex(/^[a-zA-Z0-9-]{16,64}$/),
@@ -774,25 +910,30 @@ const createSchema = z
 type Planned = Built & {
   prompt: string;
   take: number;
-  provider: Provider;
+  provider: BenchProvider;
   endpoint: string;
   name: string;
   cents: number;
   priced: boolean;
+  /** Replicate's GPU rate for hardware-billed models, to cost the run from its time. */
+  gpuPerSecond: number | null;
 };
 
 async function plan(
   input: z.infer<typeof createSchema>,
-  keys: Partial<Record<Provider, string>>,
+  keys: Partial<Record<BenchProvider, string>>,
   fetcher: typeof fetch,
 ): Promise<Planned[]> {
   const { models: listed } = await benchmarkModels(input.settings, fetcher);
   const frame = input.settings.firstFrameId;
-  const images: Partial<Record<Provider, string>> = {};
-  if (frame) {
-    if (keys.fal) images.fal = await startImage('fal', frame);
-    if (keys.higgsfield) images.higgsfield = await startImage('higgsfield', frame, keys.higgsfield);
-  }
+  const images: Partial<Record<BenchProvider, string>> = {};
+  if (frame)
+    for (const provider of ['fal', 'higgsfield', 'openrouter', 'replicate'] as const)
+      if (keys[provider]) images[provider] = await startImage(provider, frame, keys.higgsfield);
+  const mode = modeOf(input.settings);
+  const openRouterList = input.models.some((m) => m.startsWith('openrouter:'))
+    ? await openRouterVideoModels(fetcher)
+    : [];
   const perModel = await Promise.all(
     input.models.map(async (id) => {
       const entry = listed.find((m) => m.id === id);
@@ -801,7 +942,17 @@ async function plan(
       if (entry.blocker)
         throw new GateError('INVALID_INPUT', `${entry.name}: ${entry.blocker.toLowerCase()}`);
       let spec: InputSpec | null = null;
-      if (!entry.studioModel) {
+      let openrouter: OpenRouterModel | undefined;
+      let gpuPerSecond: number | null = null;
+      if (entry.provider === 'openrouter') {
+        openrouter = openRouterList.find((m) => m.id === entry.endpoint);
+        if (!openrouter) throw new GateError('INVALID_INPUT', `${entry.name} is no longer listed by OpenRouter`);
+      } else if (entry.provider === 'replicate') {
+        const model = (await replicateModelsFor(keys.replicate!, mode, fetcher)).find((m) => m.slug === entry.endpoint);
+        if (!model) throw new GateError('INVALID_INPUT', `${entry.name} is no longer listed by Replicate`);
+        spec = replicateInputSpec(model);
+        gpuPerSecond = (await replicatePricing(entry.endpoint, fetcher).catch(() => null))?.hardwarePerSecond ?? null;
+      } else if (!entry.studioModel) {
         if (entry.provider === 'fal') spec = await falInputSpec(entry.endpoint, fetcher);
         else {
           const docs = (
@@ -815,12 +966,12 @@ async function plan(
           spec = await higgsfieldInputSpec(docs, fetcher);
         }
       }
-      return { entry, spec };
+      return { entry, spec, openrouter, gpuPerSecond };
     }),
   );
   // Every prompt, then every model, then every take: renders of one prompt sit together.
   return input.prompts.flatMap((prompt) =>
-    perModel.flatMap(({ entry, spec }) =>
+    perModel.flatMap(({ entry, spec, openrouter, gpuPerSecond }) =>
       Array.from({ length: input.settings.takes }, (_, t) => ({
         ...buildFor(
           entry.provider,
@@ -829,6 +980,7 @@ async function plan(
           prompt,
           input.settings,
           images[entry.provider],
+          openrouter,
         ),
         prompt,
         take: t + 1,
@@ -837,10 +989,18 @@ async function plan(
         name: entry.name,
         cents: entry.cents ?? UNPRICED_HOLD_CENTS,
         priced: entry.cents !== null,
+        gpuPerSecond,
       })),
     ),
   );
 }
+
+const KEYS: Record<BenchProvider, { load: () => Promise<string | undefined>; name: string }> = {
+  fal: { load: falKey, name: 'fal' },
+  higgsfield: { load: higgsfieldKey, name: 'Higgsfield' },
+  openrouter: { load: openrouterKey, name: 'OpenRouter' },
+  replicate: { load: replicateKey, name: 'Replicate' },
+};
 
 const pending = new Map<string, Promise<{ id: string }>>();
 export function createBenchmark(raw: unknown, fetcher: typeof fetch = fetch) {
@@ -917,19 +1077,15 @@ async function launch(
         )[0];
   const existing = await done();
   if (existing) return { id: existing.id };
-  const providers = new Set(input.models.map((m) => m.split(':')[0] as Provider));
-  const keys: Partial<Record<Provider, string>> = {};
-  if (providers.has('fal')) {
-    keys.fal = await falKey();
-    if (!keys.fal)
-      throw new GateError('FAL_REQUIRED', 'Add FAL_KEY to .env.local and restart before running fal models');
-  }
-  if (providers.has('higgsfield')) {
-    keys.higgsfield = await higgsfieldKey();
-    if (!keys.higgsfield)
+  const providers = new Set(input.models.map((m) => m.split(':')[0] as BenchProvider));
+  const keys: Partial<Record<BenchProvider, string>> = {};
+  for (const provider of providers) {
+    const { load, name } = KEYS[provider];
+    keys[provider] = await load();
+    if (!keys[provider])
       throw new GateError(
-        'HIGGSFIELD_REQUIRED',
-        'Add HIGGSFIELD_KEY to .env.local and restart before running Higgsfield models',
+        `${provider.toUpperCase()}_REQUIRED`,
+        `Add your ${name} key under Keys and limit before running ${name} models`,
       );
   }
   const planned = await plan(input, keys, fetcher);
@@ -993,6 +1149,7 @@ async function launch(
             input: withoutInlineImages({ ...p.input, prompt: undefined }),
             used: p.used,
             priced: p.priced,
+            ...(p.gpuPerSecond !== null ? { gpuPerSecond: p.gpuPerSecond } : {}),
           }),
         ],
         db,
@@ -1020,7 +1177,7 @@ async function launch(
               fetcher,
               `benchmark-${id}`,
             )
-          : await studioProviders.fal.submit(keys.fal!, p.endpoint, p.input, fetcher);
+          : await studioProviders[p.provider].submit(keys[p.provider]!, p.endpoint, p.input, fetcher);
       await pool.query(
         "UPDATE renders SET state='RUNNING',request_id=$2,status_url=$3,response_url=$4,submitted_at=now() WHERE id=$1",
         [id, submitted.requestId, submitted.statusUrl, submitted.responseUrl],
@@ -1043,7 +1200,7 @@ async function launch(
 export async function cancelQueued(benchmarkId: string, fetcher: typeof fetch = fetch) {
   const open = await rows<{
     id: string;
-    provider: Provider;
+    provider: BenchProvider;
     request_id: string;
     status_url: string;
     started_at: string | null;
@@ -1052,12 +1209,9 @@ export async function cancelQueued(benchmarkId: string, fetcher: typeof fetch = 
      WHERE benchmark_id=$1 AND state='RUNNING' AND request_id IS NOT NULL`,
     [benchmarkId],
   );
-  const keys = {
-    fal: open.some((s) => s.provider === 'fal') ? await falKey().catch(() => undefined) : undefined,
-    higgsfield: open.some((s) => s.provider === 'higgsfield')
-      ? await higgsfieldKey().catch(() => undefined)
-      : undefined,
-  };
+  const keys: Partial<Record<BenchProvider, string>> = {};
+  for (const provider of new Set(open.map((s) => s.provider)))
+    keys[provider] = await KEYS[provider].load().catch(() => undefined);
   let canceled = 0;
   let refused = 0;
   const queued = open.filter((s) => !s.started_at);
@@ -1067,16 +1221,23 @@ export async function cancelQueued(benchmarkId: string, fetcher: typeof fetch = 
       refused++;
       continue;
     }
+    // OpenRouter has no cancel endpoint, so its queued renders are left to finish.
+    if (shot.provider === 'openrouter') {
+      refused++;
+      continue;
+    }
     const url =
       shot.provider === 'fal'
         ? shot.status_url.replace(/\/status$/, '/cancel')
-        : `https://api.higgsfield.ai/requests/${encodeURIComponent(shot.request_id)}/cancel`;
-    if (!/^https:\/\/(queue\.fal\.run|api\.higgsfield\.ai)\//.test(url)) continue;
+        : shot.provider === 'replicate'
+          ? `${shot.status_url.replace(/\/$/, '')}/cancel`
+          : `https://api.higgsfield.ai/requests/${encodeURIComponent(shot.request_id)}/cancel`;
+    if (!/^https:\/\/(queue\.fal\.run|api\.higgsfield\.ai|api\.replicate\.com)\//.test(url)) continue;
     let ok = false;
     try {
       const response = await fetcher(url, {
         method: shot.provider === 'fal' ? 'PUT' : 'POST',
-        headers: { Authorization: `Key ${key}` },
+        headers: { Authorization: shot.provider === 'replicate' ? `Bearer ${key}` : `Key ${key}` },
         redirect: 'error',
         signal: AbortSignal.timeout(15000),
       });
@@ -1103,7 +1264,7 @@ type BenchShotRow = {
   id: string;
   benchmark_id: string;
   endpoint: string;
-  provider: Provider;
+  provider: BenchProvider;
   model: string;
   state: string;
   estimated_cents: number;
@@ -1190,7 +1351,7 @@ function publicBenchShot(r: BenchShotRow) {
     queueSeconds: num(r.queue_seconds) ?? seconds(r.submitted_at, r.started_at),
     runSeconds: num(r.run_seconds) ?? (r.finished_at ? seconds(r.started_at, r.finished_at) : null),
     timing:
-      r.provider === 'fal' && r.reconciled_at && r.run_seconds !== null
+      (r.provider === 'fal' || r.provider === 'replicate') && r.reconciled_at && r.run_seconds !== null
         ? ('provider' as const)
         : ('measured' as const),
     reconciled: Boolean(r.reconciled_at),
@@ -1284,7 +1445,7 @@ async function leaderboard(raw: Partial<LeaderboardScope> = {}) {
   const [list, cast, setups, common] = await Promise.all([
     rows<{
       endpoint: string;
-      provider: Provider;
+      provider: BenchProvider;
       name: string;
       runs: number;
       done: number;
@@ -1436,7 +1597,7 @@ export async function modelHistory(id: string) {
     }
   return {
     id: parsed,
-    provider: provider as Provider,
+    provider: provider as BenchProvider,
     endpoint,
     renders: list.map((r) => ({
       ...publicBenchShot(r),
@@ -1576,13 +1737,14 @@ export async function reconcileBenchmarkShots(fetcher: typeof fetch = fetch) {
     `UPDATE renders SET state='UNKNOWN',error='The submission did not finish. Check the fal dashboard for this prompt.'
      WHERE benchmark_id IS NOT NULL AND state='SUBMITTING' AND request_id IS NULL AND created_at < now() - interval '15 minutes'`,
   );
-  // Higgsfield has no request history: keep the poller's split once a render ends.
+  // Higgsfield and OpenRouter have no request history: keep the poller's split once a render ends.
+  // (OpenRouter's bill and Replicate's own timing are stored by the poller as each render finishes.)
   await pool.query(
     `UPDATE renders SET
        queue_seconds = CASE WHEN started_at IS NOT NULL THEN extract(epoch FROM started_at - submitted_at) END,
        run_seconds = CASE WHEN started_at IS NOT NULL AND finished_at IS NOT NULL THEN extract(epoch FROM finished_at - started_at) END,
        reconciled_at = now()
-     WHERE benchmark_id IS NOT NULL AND provider='higgsfield' AND reconciled_at IS NULL AND state IN ('COMPLETE','FAILED')`,
+     WHERE benchmark_id IS NOT NULL AND provider IN ('higgsfield','openrouter') AND reconciled_at IS NULL AND state IN ('COMPLETE','FAILED')`,
   );
   const due = await rows<{
     id: string;

@@ -11,7 +11,7 @@ const themeScript = `try{var t=localStorage.getItem('genmedia-theme');document.d
 
 export const metadata: Metadata = {
   title: 'GenMedia Benchmark',
-  description: 'Run one prompt on many fal and Higgsfield video models and compare look, speed and cost.',
+  description: 'Run one prompt on many fal, Higgsfield, OpenRouter and Replicate video models and compare look, speed and cost.',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

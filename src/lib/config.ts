@@ -7,6 +7,8 @@ export function settings() {
     dataDir,
     storageDir: resolve(dataDir, 'media'),
     falKey: process.env.FAL_KEY?.trim() || undefined,
+    openrouterKey: process.env.OPENROUTER_API_KEY?.trim() || undefined,
+    replicateKey: (process.env.REPLICATE_API_TOKEN || process.env.REPLICATE_API_KEY)?.trim() || undefined,
     higgsfieldKey:
       (process.env.HIGGSFIELD_KEY || process.env.HF_CREDENTIALS || process.env.HF_KEY)?.trim() ||
       undefined,

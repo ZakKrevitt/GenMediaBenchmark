@@ -4,13 +4,23 @@ import { resolve } from 'node:path';
 import { GateError } from './contracts';
 import { verifyFalKey } from '../providers/fal-studio';
 import { higgsfieldKeyPattern, verifyHiggsfieldKey } from '../providers/higgsfield';
+import { verifyOpenRouterKey } from '../providers/openrouter';
+import { verifyReplicateKey } from '../providers/replicate';
 
 // The setup wizard (in the app and `npm run setup`) writes your keys to .env.local, which is
 // gitignored. Values are only ever written there and into this process's environment, never
 // returned to the browser or printed.
 
 export const ENV_FILE = resolve(/*turbopackIgnore: true*/ process.cwd(), '.env.local');
-export const SETUP_KEYS = ['FAL_KEY', 'HIGGSFIELD_KEY', 'OPENAI_API_KEY', 'LLM_MODEL', 'DAILY_LIMIT_USD'] as const;
+export const SETUP_KEYS = [
+  'FAL_KEY',
+  'HIGGSFIELD_KEY',
+  'OPENROUTER_API_KEY',
+  'REPLICATE_API_TOKEN',
+  'OPENAI_API_KEY',
+  'LLM_MODEL',
+  'DAILY_LIMIT_USD',
+] as const;
 export type SetupKey = (typeof SETUP_KEYS)[number];
 
 /** Sets or replaces the given variables in .env.local, keeping every other line as it was. */
@@ -33,23 +43,32 @@ export async function writeEnv(values: Partial<Record<SetupKey, string>>, file =
 }
 
 /** Checks a key with the provider's free endpoints (a price lookup or quote). Nothing is billed. */
-export async function verifyKey(provider: 'fal' | 'higgsfield', key: string, fetcher: typeof fetch = fetch) {
+export type KeyProvider = 'fal' | 'higgsfield' | 'openrouter' | 'replicate';
+const KEY_PAGES: Record<KeyProvider, string> = {
+  fal: 'fal.ai/dashboard/keys',
+  higgsfield: 'cloud.higgsfield.ai/api-keys',
+  openrouter: 'openrouter.ai/settings/keys',
+  replicate: 'replicate.com/account/api-tokens',
+};
+const NAMES: Record<KeyProvider, string> = { fal: 'fal', higgsfield: 'Higgsfield', openrouter: 'OpenRouter', replicate: 'Replicate' };
+
+export async function verifyKey(provider: KeyProvider, key: string, fetcher: typeof fetch = fetch) {
   const value = key.trim();
   if (provider === 'higgsfield' && !higgsfieldKeyPattern.test(value))
     throw new GateError('INVALID_HIGGSFIELD_KEY', 'Paste the Higgsfield key as KEY_ID:KEY_SECRET.');
   try {
     if (provider === 'fal') await verifyFalKey(value, fetcher);
-    else await verifyHiggsfieldKey(value, fetcher);
+    else if (provider === 'higgsfield') await verifyHiggsfieldKey(value, fetcher);
+    else if (provider === 'openrouter') await verifyOpenRouterKey(value, fetcher);
+    else await verifyReplicateKey(value, fetcher);
     return { warning: null as string | null };
   } catch (error) {
     // The key works; the account just cannot pay for renders yet.
     if (error instanceof GateError && error.code === 'BUDGET_EXCEEDED') return { warning: error.message };
     if (error instanceof GateError && error.code === 'AUTH_REQUIRED')
       throw new GateError(
-        provider === 'fal' ? 'INVALID_FAL_KEY' : 'INVALID_HIGGSFIELD_KEY',
-        provider === 'fal'
-          ? 'fal rejected this key. Copy it again from fal.ai/dashboard/keys.'
-          : 'Higgsfield rejected this key. Copy it again from cloud.higgsfield.ai/api-keys.',
+        `INVALID_${provider.toUpperCase()}_KEY`,
+        `${NAMES[provider]} rejected this key. Copy it again from ${KEY_PAGES[provider]}.`,
       );
     throw error;
   }
@@ -86,6 +105,8 @@ export async function setupStatus() {
   return {
     fal: Boolean(process.env.FAL_KEY?.trim()),
     higgsfield: Boolean((process.env.HIGGSFIELD_KEY || process.env.HF_CREDENTIALS || process.env.HF_KEY)?.trim()),
+    openrouter: Boolean(process.env.OPENROUTER_API_KEY?.trim()),
+    replicate: Boolean((process.env.REPLICATE_API_TOKEN || process.env.REPLICATE_API_KEY)?.trim()),
     judge: Boolean(process.env.OPENAI_API_KEY?.trim() && process.env.LLM_MODEL?.trim()),
     llmModel: process.env.LLM_MODEL?.trim() || null,
     dailyLimitUsd: Number(process.env.DAILY_LIMIT_USD ?? 20) || 20,

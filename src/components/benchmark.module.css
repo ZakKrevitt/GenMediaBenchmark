@@ -654,8 +654,11 @@ th[aria-sort] .sortHead {
 }
 
 .valueChart {
+  /* Validated all-pairs for a scatter (dataviz validator, 5 October 2026); Replicate is neutral ink. */
   --series-1: #2a78d6;
   --series-2: #eb6834;
+  --series-3: #1baf7a;
+  --series-4: var(--text-secondary);
   display: grid;
   gap: 12px;
   padding: 18px 24px 22px;
@@ -665,11 +668,13 @@ th[aria-sort] .sortHead {
   :root:where(:not([data-theme='light'])) .valueChart {
     --series-1: #3987e5;
     --series-2: #d95926;
+    --series-3: #199e70;
   }
 }
 :root[data-theme='dark'] .valueChart {
   --series-1: #3987e5;
   --series-2: #d95926;
+  --series-3: #199e70;
 }
 .chartControls {
   display: flex;
@@ -724,7 +729,9 @@ th[aria-sort] .sortHead {
   fill: var(--text-secondary);
 }
 .dotFal,
-.dotHf {
+.dotHf,
+.dotOr,
+.dotRep {
   stroke: var(--surface);
   stroke-width: 2;
 }
@@ -733,6 +740,12 @@ th[aria-sort] .sortHead {
 }
 .dotHf {
   fill: var(--series-2);
+}
+.dotOr {
+  fill: var(--series-3);
+}
+.dotRep {
+  fill: var(--series-4);
 }
 .hit {
   fill: transparent;

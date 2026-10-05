@@ -4,10 +4,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { audit, one, pool, rows, transaction } from '../lib/db';
 import { GateError } from '../lib/contracts';
-import { falKey, higgsfieldKey } from '../lib/fal-key';
+import { falKey, higgsfieldKey, openrouterKey, replicateKey } from '../lib/fal-key';
 import { allowedMediaUrl, downloadMedia, putAsset, withAssetPath } from '../lib/storage';
 import { runMedia } from '../lib/media';
-import type { Provider } from '../lib/studio';
+import type { BenchProvider } from '../lib/studio';
 import { studioProviders } from '../providers/studio-providers';
 import { allowedHiggsfieldMediaUrl } from '../providers/higgsfield';
 
@@ -16,7 +16,7 @@ import { allowedHiggsfieldMediaUrl } from '../providers/higgsfield';
 
 type RenderRow = {
   id: string;
-  provider: Provider;
+  provider: BenchProvider;
   request_id: string | null;
   status_url: string | null;
   response_url: string | null;
@@ -24,15 +24,22 @@ type RenderRow = {
   created_at: string;
   submitted_at: string | null;
   started_at: string | null;
+  request_settings: { gpuPerSecond?: number } | null;
 };
 
 const TIMEOUT_MINUTES = 45;
 const busy = new Set<string>();
-const keyFor = (provider: Provider) => (provider === 'fal' ? falKey() : higgsfieldKey());
+const KEY: Record<BenchProvider, () => Promise<string | undefined>> = {
+  fal: falKey,
+  higgsfield: higgsfieldKey,
+  openrouter: openrouterKey,
+  replicate: replicateKey,
+};
+const keyFor = (provider: BenchProvider) => KEY[provider]();
 
 export async function pollRenders(fetcher: typeof fetch = fetch) {
   const open = await rows<RenderRow>(
-    `SELECT id,provider,request_id,status_url,response_url,duration_seconds,created_at,submitted_at,started_at
+    `SELECT id,provider,request_id,status_url,response_url,duration_seconds,created_at,submitted_at,started_at,request_settings
      FROM renders WHERE state IN ('RUNNING','DOWNLOADING')
        AND (polled_at IS NULL OR polled_at < now() - interval '6 seconds') ORDER BY created_at LIMIT 16`,
   );
@@ -84,9 +91,12 @@ async function advance(render: RenderRow, key: string | undefined, fetcher: type
   await pool.query("UPDATE renders SET state='DOWNLOADING',finished_at=coalesce(finished_at,now()) WHERE id=$1", [
     render.id,
   ]);
-  const url =
-    render.provider === 'higgsfield' ? allowedHiggsfieldMediaUrl(result.videoUrl) : allowedMediaUrl(result.videoUrl);
-  const video = await downloadMedia(url, fetcher);
+  const video = provider.download
+    ? await provider.download(key, result.videoUrl, fetcher)
+    : await downloadMedia(
+        render.provider === 'higgsfield' ? allowedHiggsfieldMediaUrl(result.videoUrl) : allowedMediaUrl(result.videoUrl),
+        fetcher,
+      );
   const videoKey = `renders/${render.id}/video.mp4`;
   await putAsset(videoKey, video);
   const posterKey = await extractPoster(render.id, videoKey, render.duration_seconds).catch((error) => {
@@ -94,10 +104,31 @@ async function advance(render: RenderRow, key: string | undefined, fetcher: type
     return null;
   });
   const output = await probeOutput(videoKey, video.length).catch(() => null);
+  // OpenRouter reports its bill; Replicate reports its own queue and run time, and a GPU-billed
+  // Replicate model costs its rate times that run time.
+  const runSeconds = result.timing?.runSeconds ?? null;
+  const gpu = render.request_settings?.gpuPerSecond;
+  const runCents = gpu && runSeconds !== null ? Math.max(1, Math.round(gpu * runSeconds * 100)) : null;
   await transaction(async (db) => {
     await db.query(
-      "UPDATE renders SET state='COMPLETE',video_key=$2,poster_key=$3,seed=$4,output=$5,error=NULL,completed_at=now() WHERE id=$1",
-      [render.id, videoKey, posterKey, result.seed ?? null, output && JSON.stringify(output)],
+      `UPDATE renders SET state='COMPLETE',video_key=$2,poster_key=$3,seed=$4,output=$5,error=NULL,completed_at=now(),
+         billed_cents=coalesce($6,billed_cents),
+         queue_seconds=coalesce($7,queue_seconds), run_seconds=coalesce($8,run_seconds),
+         estimated_cents=coalesce($9,estimated_cents),
+         reconciled_at=CASE WHEN $10 THEN now() ELSE reconciled_at END
+       WHERE id=$1`,
+      [
+        render.id,
+        videoKey,
+        posterKey,
+        result.seed ?? null,
+        output && JSON.stringify(output),
+        result.billedCents ?? null,
+        result.timing?.queueSeconds ?? null,
+        runSeconds,
+        runCents,
+        Boolean(result.timing),
+      ],
     );
     await audit(db, 'render.complete', render.id, { requestId: render.request_id });
   });

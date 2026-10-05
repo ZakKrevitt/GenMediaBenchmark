@@ -11,7 +11,7 @@ export default function Page() {
         <header className="studio-header">
           <div className="studio-title">
             <h1>GenMedia Benchmark</h1>
-            <p>Run one prompt on many fal and Higgsfield video models and compare look, speed and cost.</p>
+            <p>Run one prompt on many fal, Higgsfield, OpenRouter and Replicate video models and compare look, speed and cost.</p>
           </div>
           <ThemeToggle />
         </header>

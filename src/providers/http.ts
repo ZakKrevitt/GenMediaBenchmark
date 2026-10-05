@@ -23,3 +23,6 @@ export function classifyHttp(status: number, mutation = false) {
     `Provider rejected the operation (HTTP ${status}). Inspect its account console.`,
   );
 }
+
+/** Rounds a price up to whole cents, ignoring floating-point dust ($0.10 × 6 is 60¢, not 61¢). */
+export const wholeCents = (cents: number) => Math.max(1, Math.ceil(Math.round(cents * 1e6) / 1e6));

@@ -110,4 +110,16 @@ CREATE TABLE benchmark_models_seen (
 );
 `,
   ],
+  [
+    '002_openrouter_replicate',
+    `
+-- OpenRouter and Replicate join fal and Higgsfield as providers a benchmark can compare.
+ALTER TABLE renders DROP CONSTRAINT IF EXISTS renders_provider_check;
+ALTER TABLE renders ADD CONSTRAINT renders_provider_check
+  CHECK (provider IN ('fal','higgsfield','openrouter','replicate'));
+ALTER TABLE benchmark_models_seen DROP CONSTRAINT IF EXISTS benchmark_models_seen_provider_check;
+ALTER TABLE benchmark_models_seen ADD CONSTRAINT benchmark_models_seen_provider_check
+  CHECK (provider IN ('fal','higgsfield','openrouter','replicate'));
+`,
+  ],
 ];

@@ -7,3 +7,9 @@ export async function falKey() {
 export async function higgsfieldKey() {
   return settings().higgsfieldKey;
 }
+export async function openrouterKey() {
+  return settings().openrouterKey;
+}
+export async function replicateKey() {
+  return settings().replicateKey;
+}

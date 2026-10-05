@@ -1,6 +1,6 @@
 # GenMedia Benchmark
 
-Run one prompt across many fal and Higgsfield video models at once, then compare the results side by side: how they look, how long they took, what they cost, and how they score.
+Run one prompt across many fal, Higgsfield, OpenRouter and Replicate video models at once, then compare the results side by side: how they look, how long they took, what they cost, and how they score.
 
 It runs on your machine with your own provider keys. There are no accounts, no hosted service and no database to install.
 
@@ -10,9 +10,9 @@ It runs on your machine with your own provider keys. There are no accounts, no h
 
 ## What it does
 
-- **Every model, one prompt.** Lists every active text-to-video (or image-to-video) model on fal and Higgsfield. Tuned models use hand-written request builders; every other model is driven from its published parameters, with your settings snapped to what each model accepts.
-- **Priced before you spend.** fal models are priced from fal's pricing API (or its historical average), Higgsfield models from Higgsfield's free per-request quote. A daily spend limit stops a run that would go over.
-- **Real timing and cost.** Queue time, generation time and, for fal, the billed cost are read back from the provider after each render.
+- **Every model, one prompt.** Lists every active text-to-video (or image-to-video) model on fal, Higgsfield, OpenRouter and Replicate, so the same model can be compared across providers on price and speed. Tuned models use hand-written request builders; every other model is driven from its published parameters, with your settings snapped to what each model accepts.
+- **Priced before you spend.** fal models are priced from fal's pricing API (or its historical average), Higgsfield models from Higgsfield's free per-request quote, OpenRouter models from the price list it publishes per model, and Replicate models from the billing table on each model's page. A daily spend limit stops a run that would go over.
+- **Real timing and cost.** fal and Replicate report their own queue and generation times; fal (admin key) and OpenRouter report what they actually charged. Replicate reports no bill, so its cost is computed from its published rates and marked *est.*
 - **Objective checks.** ffmpeg measures motion, hard cuts, freezes, black frames, silence and loudness on every render, plus a six-frame filmstrip.
 - **Same length, same footing.** With Exact length on (the default), only models that can render exactly the duration you chose take part, so their costs compare directly.
 - **Judging.** Rate and annotate renders, pick a winner, vote blind in the Arena, or let an optional AI judge score frames blind.
@@ -31,7 +31,7 @@ It runs on your machine with your own provider keys. There are no accounts, no h
 
 - Node.js 22.12 or newer
 - ffmpeg and ffprobe on your `PATH` (`brew install ffmpeg`, `apt install ffmpeg`, or [ffmpeg.org](https://ffmpeg.org/download.html))
-- A [fal](https://fal.ai/dashboard/keys) key, a [Higgsfield](https://cloud.higgsfield.ai/api-keys) key, or both
+- A key for at least one of [fal](https://fal.ai/dashboard/keys), [Higgsfield](https://cloud.higgsfield.ai/api-keys), [OpenRouter](https://openrouter.ai/settings/keys) and [Replicate](https://replicate.com/account/api-tokens)
 
 ## Quick start with Claude Code or Codex
 
@@ -64,6 +64,11 @@ Add an OpenAI key and a model that accepts images in setup (or set `OPENAI_API_K
 
 `DAILY_LIMIT_USD` resets at midnight on the computer running the app. A render that fails costs nothing, unless the provider reports billing it anyway.
 
+### Provider notes
+
+- **OpenRouter** lists its video models publicly, so they show up even before you add a key. It has no cancel endpoint, so a queued OpenRouter render runs to the end. Start images are sent inline.
+- **Replicate** needs a token even to list models. Models billed by GPU time are estimated from Replicate's typical run and then costed from the run's actual time. Start images are shrunk to Replicate's 256 KB inline limit.
+
 ### fal billing
 
 fal only returns billed cost to admin-scoped keys. With an ordinary key, renders keep their estimated price, and timing is still read from fal.
@@ -93,7 +98,7 @@ A Next.js app with an embedded Postgres ([PGlite](https://pglite.dev)) stored in
 
 ```bash
 npm test                  # unit tests
-npm run test:integration  # end to end with fake fal and Higgsfield, real ffmpeg, no keys or money
+npm run test:integration  # end to end with fake fal, Higgsfield, OpenRouter and Replicate, real ffmpeg, no keys or money
 npm run check             # tests, typecheck, lint and build
 ```
 

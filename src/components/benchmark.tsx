@@ -64,7 +64,22 @@ type State = {
 };
 
 type Provider = BenchModel['provider'];
-const PROVIDER_NAME: Record<Provider, string> = { fal: 'fal', higgsfield: 'Higgsfield' };
+const PROVIDERS = ['fal', 'higgsfield', 'openrouter', 'replicate'] as const;
+const PROVIDER_NAME: Record<Provider, string> = {
+  fal: 'fal',
+  higgsfield: 'Higgsfield',
+  openrouter: 'OpenRouter',
+  replicate: 'Replicate',
+};
+type Listing = {
+  models: BenchModel[];
+  falConnected: boolean;
+  higgsfieldConnected: boolean;
+  connected?: Record<Provider, boolean>;
+  notes?: string[];
+};
+const liveOf = (r: Listing): Record<Provider, boolean> =>
+  r.connected ?? { fal: r.falConnected, higgsfield: r.higgsfieldConnected, openrouter: false, replicate: false };
 
 const ASPECTS = ['9:16', '16:9', '1:1', '3:4', '21:9'] as const;
 const RESOLUTIONS = ['480p', '720p', '1080p'] as const;
@@ -192,6 +207,8 @@ export function Benchmark({ active }: { active: boolean }) {
   const [connected, setConnected] = useState<Record<Provider, boolean>>({
     fal: true,
     higgsfield: true,
+    openrouter: true,
+    replicate: true,
   });
   const [submitting, setSubmitting] = useState(false);
   const [runError, setRunError] = useState('');
@@ -243,15 +260,10 @@ export function Benchmark({ active }: { active: boolean }) {
     let gone = false;
     const id = setTimeout(async () => {
       try {
-        const next = await api<{
-          models: BenchModel[];
-          falConnected: boolean;
-          higgsfieldConnected: boolean;
-          notes: string[];
-        }>(`/api/benchmarks/models?${q}`);
+        const next = await api<Listing>(`/api/benchmarks/models?${q}`);
         if (gone) return;
         setNotes(next.notes ?? []);
-        const live = { fal: next.falConnected, higgsfield: next.higgsfieldConnected };
+        const live = liveOf(next);
         setModels(next.models);
         setConnected(live);
         setModelsError('');
@@ -291,7 +303,7 @@ export function Benchmark({ active }: { active: boolean }) {
     (p) => !connected[p] && (models ?? []).some((m) => m.provider === p),
   );
   const picked = runnable.filter((m) => chosen?.has(m.id));
-  const counts = { fal: 0, higgsfield: 0 };
+  const counts: Record<Provider, number> = { fal: 0, higgsfield: 0, openrouter: 0, replicate: 0 };
   for (const m of runnable) counts[m.provider]++;
   // Prices do not depend on the prompt, so a suite costs the same per prompt and per take.
   const runs = Math.max(1, prompts.length) * settings.takes;
@@ -320,7 +332,7 @@ export function Benchmark({ active }: { active: boolean }) {
     if (
       total > 1000 &&
       !window.confirm(
-        `Run ${renders} renders for about ${money(total)}? fal and Higgsfield bill this.`,
+        `Run ${renders} renders for about ${money(total)}? The providers bill this to your accounts.`,
       )
     )
       return;
@@ -639,7 +651,7 @@ export function Benchmark({ active }: { active: boolean }) {
 
         <div className={styles.pickerBar}>
           <div role="group" aria-label="Provider" className={styles.segments}>
-            {(['all', 'fal', 'higgsfield'] as const).map((p) => (
+            {(['all', ...PROVIDERS.filter((x) => connected[x])] as const).map((p) => (
               <button key={p} aria-pressed={provider === p} onClick={() => setProvider(p)}>
                 {p === 'all' ? 'All' : PROVIDER_NAME[p]}
                 {models && p !== 'all' ? ` ${counts[p]}` : ''}
@@ -684,7 +696,7 @@ export function Benchmark({ active }: { active: boolean }) {
             {modelsError || (
               <>
                 <ProgressRing label="Loading" />
-                Reading every fal and Higgsfield video model’s settings and price
+                Reading every video model’s settings and price
               </>
             )}
           </div>
@@ -1164,12 +1176,10 @@ function AddModels({
   useEffect(() => {
     const q = settingsQuery(bench.settings);
     let gone = false;
-    api<{ models: BenchModel[]; falConnected: boolean; higgsfieldConnected: boolean }>(
-      `/api/benchmarks/models?${q}`,
-    )
+    api<Listing>(`/api/benchmarks/models?${q}`)
       .then((r) => {
         if (gone) return;
-        const live = { fal: r.falConnected, higgsfield: r.higgsfieldConnected };
+        const live = liveOf(r);
         setList(r.models.filter((m) => !m.blocker && live[m.provider]));
       })
       .catch((e) => !gone && setError(e instanceof Error ? e.message : 'Could not list models'));
@@ -2224,18 +2234,14 @@ function ValueChart({ rows }: { rows: LeaderRow[] }) {
           ))}
         </div>
         <ul className={styles.chartLegend} aria-label="Legend">
-          <li>
-            <svg width="12" height="12" aria-hidden="true">
-              <circle cx="6" cy="6" r="5" className={styles.dotFal} />
-            </svg>
-            fal
-          </li>
-          <li>
-            <svg width="12" height="12" aria-hidden="true">
-              <rect x="1" y="1" width="10" height="10" rx="2" className={styles.dotHf} />
-            </svg>
-            Higgsfield
-          </li>
+          {PROVIDERS.filter((p) => rows.some((r) => r.provider === p)).map((p) => (
+            <li key={p}>
+              <svg width="14" height="14" aria-hidden="true">
+                <Marker provider={p} cx={7} cy={7} r={5} />
+              </svg>
+              {PROVIDER_NAME[p]}
+            </li>
+          ))}
           <li>
             <svg width="18" height="12" aria-hidden="true">
               <line x1="1" y1="6" x2="17" y2="6" className={styles.frontierLine} />
@@ -2288,18 +2294,7 @@ function ValueChart({ rows }: { rows: LeaderRow[] }) {
                   tabIndex={0}
                 >
                   <circle cx={cx} cy={cy} r={14} className={styles.hit} />
-                  {p.provider === 'fal' ? (
-                    <circle cx={cx} cy={cy} r={on ? 6.5 : 5} className={styles.dotFal} />
-                  ) : (
-                    <rect
-                      x={cx - (on ? 6 : 5)}
-                      y={cy - (on ? 6 : 5)}
-                      width={on ? 12 : 10}
-                      height={on ? 12 : 10}
-                      rx={2}
-                      className={styles.dotHf}
-                    />
-                  )}
+                  <Marker provider={p.provider} cx={cx} cy={cy} r={on ? 6.5 : 5} />
                   {bestIds.has(p.id) && !on && (
                     <text x={cx + 9} y={cy - 8} className={styles.pointLabel}>
                       {p.name.length > 22 ? `${p.name.slice(0, 21)}…` : p.name}
@@ -2337,12 +2332,37 @@ function ValueChart({ rows }: { rows: LeaderRow[] }) {
   );
 }
 
-const curlFor = (shot: BenchShot) => {
-  const body = JSON.stringify(shot.request).replaceAll("'", "'\\''");
-  return shot.provider === 'fal'
-    ? `curl -X POST 'https://queue.fal.run/${shot.endpoint}' \\\n  -H "Authorization: Key $FAL_KEY" \\\n  -H 'Content-Type: application/json' \\\n  -d '${body}'`
-    : `curl -X POST 'https://api.higgsfield.ai/${shot.endpoint}' \\\n  -H "Authorization: Key $HF_API_KEY_ID:$HF_API_KEY_SECRET" \\\n  -H 'Content-Type: application/json' \\\n  -d '${body}'`;
+// Each provider gets its own marker shape, so identity never rests on colour alone; Replicate is
+// drawn in neutral ink because no fourth hue stays distinct beside the other three on a scatter.
+function Marker({ provider, cx, cy, r }: { provider: Provider; cx: number; cy: number; r: number }) {
+  if (provider === 'fal') return <circle cx={cx} cy={cy} r={r} className={styles.dotFal} />;
+  if (provider === 'higgsfield')
+    return <rect x={cx - r} y={cy - r} width={r * 2} height={r * 2} rx={2} className={styles.dotHf} />;
+  const k = r * 1.25;
+  if (provider === 'openrouter')
+    return (
+      <polygon
+        points={`${cx},${cy - k} ${cx + k},${cy + k * 0.8} ${cx - k},${cy + k * 0.8}`}
+        className={styles.dotOr}
+      />
+    );
+  return (
+    <polygon points={`${cx},${cy - k} ${cx + k},${cy} ${cx},${cy + k} ${cx - k},${cy}`} className={styles.dotRep} />
+  );
+}
+
+const CURL: Record<Provider, (shot: BenchShot, body: string) => string> = {
+  fal: (shot, body) =>
+    `curl -X POST 'https://queue.fal.run/${shot.endpoint}' \\\n  -H "Authorization: Key $FAL_KEY" \\\n  -H 'Content-Type: application/json' \\\n  -d '${body}'`,
+  higgsfield: (shot, body) =>
+    `curl -X POST 'https://api.higgsfield.ai/${shot.endpoint}' \\\n  -H "Authorization: Key $HF_API_KEY_ID:$HF_API_KEY_SECRET" \\\n  -H 'Content-Type: application/json' \\\n  -d '${body}'`,
+  openrouter: (_shot, body) =>
+    `curl -X POST 'https://openrouter.ai/api/v1/videos' \\\n  -H "Authorization: Bearer $OPENROUTER_API_KEY" \\\n  -H 'Content-Type: application/json' \\\n  -d '${body}'`,
+  replicate: (shot, body) =>
+    `curl -X POST 'https://api.replicate.com/v1/models/${shot.endpoint}/predictions' \\\n  -H "Authorization: Bearer $REPLICATE_API_TOKEN" \\\n  -H 'Content-Type: application/json' \\\n  -d '{"input": ${body}}'`,
 };
+const curlFor = (shot: BenchShot) =>
+  CURL[shot.provider](shot, JSON.stringify(shot.request).replaceAll("'", "'\\''"));
 
 // The exact request a render was made from, to reproduce or debug it outside the app.
 function RequestView({ shot }: { shot: BenchShot }) {
